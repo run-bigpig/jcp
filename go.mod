@@ -2,8 +2,6 @@ module github.com/run-bigpig/jcp
 
 go 1.24.4
 
-toolchain go1.24.12
-
 require (
 	github.com/PuerkitoBio/goquery v1.11.0
 	github.com/google/uuid v1.6.0
