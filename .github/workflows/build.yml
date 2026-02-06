@@ -87,7 +87,15 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           cd build/bin
-          zip -r jcp-macos-${{ steps.version.outputs.version }}.${{ matrix.suffix }} ${{ matrix.output }}
+          ls -la
+          if [ -d "jcp.app" ]; then
+            zip -r jcp-macos-${{ steps.version.outputs.version }}.${{ matrix.suffix }} jcp.app
+          elif [ -f "jcp" ]; then
+            zip jcp-macos-${{ steps.version.outputs.version }}.${{ matrix.suffix }} jcp
+          else
+            echo "No output found!"
+            exit 1
+          fi
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
