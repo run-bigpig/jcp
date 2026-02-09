@@ -12,6 +12,7 @@ import (
 	"github.com/run-bigpig/jcp/internal/meeting"
 	"github.com/run-bigpig/jcp/internal/memory"
 	"github.com/run-bigpig/jcp/internal/models"
+	"github.com/run-bigpig/jcp/internal/pkg/proxy"
 	"github.com/run-bigpig/jcp/internal/services"
 	"github.com/run-bigpig/jcp/internal/services/hottrend"
 
@@ -249,6 +250,9 @@ func copyDir(src, dst string) error {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
+	// 初始化代理配置
+	proxy.GetManager().SetConfig(&a.configService.GetConfig().Proxy)
+
 	// 初始化更新服务
 	if a.updateService != nil {
 		a.updateService.Startup(ctx)
@@ -290,6 +294,8 @@ func (a *App) UpdateConfig(config *models.AppConfig) string {
 			log.Warn("MCP reload error: %v", err)
 		}
 	}
+	// 更新代理配置
+	proxy.GetManager().SetConfig(&config.Proxy)
 	// 更新记忆管理器的 LLM 配置
 	if a.meetingService != nil && config.Memory.AIConfigID != "" {
 		for i := range config.AIConfigs {

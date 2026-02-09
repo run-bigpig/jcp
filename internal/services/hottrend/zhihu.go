@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/run-bigpig/jcp/internal/pkg/proxy"
 )
 
 // ZhihuFetcher 知乎热榜获取器
@@ -15,7 +17,7 @@ type ZhihuFetcher struct {
 // NewZhihuFetcher 创建知乎热榜获取器
 func NewZhihuFetcher() *ZhihuFetcher {
 	return &ZhihuFetcher{
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: proxy.GetManager().GetClientWithTimeout(10 * time.Second),
 	}
 }
 

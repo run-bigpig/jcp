@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/run-bigpig/jcp/internal/pkg/proxy"
 )
 
 // WeiboFetcher 微博热搜获取器
@@ -15,7 +17,7 @@ type WeiboFetcher struct {
 // NewWeiboFetcher 创建微博热搜获取器
 func NewWeiboFetcher() *WeiboFetcher {
 	return &WeiboFetcher{
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: proxy.GetManager().GetClientWithTimeout(10 * time.Second),
 	}
 }
 

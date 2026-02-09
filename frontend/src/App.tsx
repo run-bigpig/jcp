@@ -174,6 +174,12 @@ const App: React.FC = () => {
           const session = await getOrCreateSession(list[0].symbol, list[0].name);
           setCurrentSession(session);
         }
+        // 主动获取一次快讯数据（解决启动时后端推送早于前端监听注册的时序问题）
+        const telegraphs = await GetTelegraphList();
+        if (telegraphs && telegraphs.length > 0) {
+          const latest = telegraphs[0];
+          setMarketMessage(`[${latest.time}] ${latest.content}`);
+        }
       } catch (err) {
         console.error('Failed to load watchlist:', err);
       } finally {
@@ -186,6 +192,8 @@ const App: React.FC = () => {
   // Load K-line data when symbol or period changes
   useEffect(() => {
     if (!selectedSymbol) return;
+    // 切换时先清空数据，避免闪烁
+    setKLineData([]);
     const loadKLineData = async () => {
       // 分时图需要更多数据点（1分钟K线，一天约240根）
       const dataLen = timePeriod === '1m' ? 250 : 60;

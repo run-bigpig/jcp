@@ -3,17 +3,24 @@ package adk
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 
+	"cloud.google.com/go/auth"
 	"cloud.google.com/go/auth/credentials"
+	"cloud.google.com/go/auth/httptransport"
 	"github.com/run-bigpig/jcp/internal/adk/openai"
 	"github.com/run-bigpig/jcp/internal/models"
+	"github.com/run-bigpig/jcp/internal/pkg/proxy"
 
+	"github.com/run-bigpig/jcp/internal/logger"
 	go_openai "github.com/sashabaranov/go-openai"
 	"google.golang.org/adk/model"
 	"google.golang.org/adk/model/gemini"
 	"google.golang.org/genai"
 )
+
+var log = logger.New("ModelFactory")
 
 // ModelFactory 模型工厂，根据配置创建对应的 adk model
 type ModelFactory struct{}
@@ -45,6 +52,10 @@ func (f *ModelFactory) createGeminiModel(ctx context.Context, config *models.AIC
 	clientConfig := &genai.ClientConfig{
 		APIKey:  config.APIKey,
 		Backend: genai.BackendGeminiAPI,
+		// 注入代理 Transport
+		HTTPClient: &http.Client{
+			Transport: proxy.GetManager().GetTransport(),
+		},
 	}
 
 	return gemini.NewModel(ctx, config.ModelName, clientConfig)
@@ -52,22 +63,54 @@ func (f *ModelFactory) createGeminiModel(ctx context.Context, config *models.AIC
 
 // createVertexAIModel 创建 Vertex AI 模型
 func (f *ModelFactory) createVertexAIModel(ctx context.Context, config *models.AIConfig) (model.LLM, error) {
-	clientConfig := &genai.ClientConfig{
-		Backend:  genai.BackendVertexAI,
-		Project:  config.Project,
-		Location: config.Location,
-	}
+	// 获取代理 Transport
+	proxyTransport := proxy.GetManager().GetTransport()
 
-	// 如果提供了证书 JSON，则使用证书认证
+	// 获取凭证
+	var creds *auth.Credentials
+	var err error
+
 	if config.CredentialsJSON != "" {
-		creds, err := credentials.DetectDefault(&credentials.DetectOptions{
+		// 使用提供的证书 JSON
+		creds, err = credentials.DetectDefault(&credentials.DetectOptions{
 			Scopes:          []string{"https://www.googleapis.com/auth/cloud-platform"},
 			CredentialsJSON: []byte(config.CredentialsJSON),
+			Client: &http.Client{
+				Transport: proxyTransport,
+			},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create credentials: %w", err)
 		}
-		clientConfig.Credentials = creds
+	} else {
+		// 使用默认凭证
+		creds, err = credentials.DetectDefault(&credentials.DetectOptions{
+			Scopes: []string{"https://www.googleapis.com/auth/cloud-platform"},
+			Client: &http.Client{
+				Transport: proxyTransport,
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to detect default credentials: %w", err)
+		}
+	}
+
+	// 使用 httptransport.NewClient 创建带认证和代理的 HTTP Client
+	// BaseRoundTripper 用于注入代理 Transport，Credentials 用于自动添加认证 header
+	httpClient, err := httptransport.NewClient(&httptransport.Options{
+		Credentials:      creds,
+		BaseRoundTripper: proxyTransport,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create authenticated HTTP client: %w", err)
+	}
+
+	clientConfig := &genai.ClientConfig{
+		Backend:     genai.BackendVertexAI,
+		Project:     config.Project,
+		Location:    config.Location,
+		Credentials: creds,
+		HTTPClient:  httpClient,
 	}
 
 	return gemini.NewModel(ctx, config.ModelName, clientConfig)
@@ -90,6 +133,10 @@ func normalizeOpenAIBaseURL(baseURL string) string {
 func (f *ModelFactory) createOpenAIModel(config *models.AIConfig) (model.LLM, error) {
 	openaiCfg := go_openai.DefaultConfig(config.APIKey)
 	openaiCfg.BaseURL = normalizeOpenAIBaseURL(config.BaseURL)
+	// 注入代理 Transport
+	openaiCfg.HTTPClient = &http.Client{
+		Transport: proxy.GetManager().GetTransport(),
+	}
 
 	return openai.NewOpenAIModel(config.ModelName, openaiCfg), nil
 }
@@ -98,7 +145,9 @@ func (f *ModelFactory) createOpenAIModel(config *models.AIConfig) (model.LLM, er
 func (f *ModelFactory) createOpenAIResponsesModel(config *models.AIConfig) (model.LLM, error) {
 	baseURL := normalizeOpenAIBaseURL(config.BaseURL)
 
-	// 复用 go-openai 的 HTTPClient 以保持代理/超时一致
-	openaiCfg := go_openai.DefaultConfig(config.APIKey)
-	return openai.NewResponsesModel(config.ModelName, config.APIKey, baseURL, openaiCfg.HTTPClient), nil
+	// 使用代理管理器的 HTTP Client
+	httpClient := &http.Client{
+		Transport: proxy.GetManager().GetTransport(),
+	}
+	return openai.NewResponsesModel(config.ModelName, config.APIKey, baseURL, httpClient), nil
 }

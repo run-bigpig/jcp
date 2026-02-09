@@ -11,24 +11,22 @@ const (
 
 // AIConfig AI服务配置
 type AIConfig struct {
-	ID               string     `json:"id"`
-	Name             string     `json:"name"`
-	Provider         AIProvider `json:"provider"`
-	BaseURL          string     `json:"baseUrl"`
-	APIKey           string     `json:"apiKey"`
-	ModelName        string     `json:"modelName"`
-	MaxTokens        int        `json:"maxTokens"`
-	Temperature      float64    `json:"temperature"`
-	Timeout          int        `json:"timeout"`
-	HttpProxy        string     `json:"httpProxy"`
-	HttpProxyEnabled bool       `json:"httpProxyEnabled"`
-	IsDefault        bool       `json:"isDefault"`
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Provider    AIProvider `json:"provider"`
+	BaseURL     string     `json:"baseUrl"`
+	APIKey      string     `json:"apiKey"`
+	ModelName   string     `json:"modelName"`
+	MaxTokens   int        `json:"maxTokens"`
+	Temperature float64    `json:"temperature"`
+	Timeout     int        `json:"timeout"`
+	IsDefault   bool       `json:"isDefault"`
 	// OpenAI Responses API 开关
-	UseResponses bool `json:"useResponses"` // 使用 Responses API 格式（/v1/responses）
+	UseResponses bool `json:"useResponses"`
 	// Vertex AI 专用字段
-	Project         string `json:"project"`         // GCP 项目 ID
-	Location        string `json:"location"`        // GCP 区域，如 us-central1
-	CredentialsJSON string `json:"credentialsJson"` // 服务账号 JSON 证书内容
+	Project         string `json:"project"`
+	Location        string `json:"location"`
+	CredentialsJSON string `json:"credentialsJson"`
 }
 
 // MCPTransportType MCP传输类型
@@ -54,12 +52,27 @@ type MCPServerConfig struct {
 
 // AppConfig 应用配置
 type AppConfig struct {
-	RefreshInterval int64             `json:"refreshInterval"`
-	Theme           string            `json:"theme"` // 主题色: military, ocean, purple, orange, dark
-	AIConfigs       []AIConfig        `json:"aiConfigs"`
-	DefaultAIID     string            `json:"defaultAiId"`
-	MCPServers      []MCPServerConfig `json:"mcpServers"` // MCP服务器配置列表
-	Memory          MemoryConfig      `json:"memory"`     // 记忆管理配置
+	Theme       string            `json:"theme"` // 主题色: military, ocean, purple, orange, dark
+	AIConfigs   []AIConfig        `json:"aiConfigs"`
+	DefaultAIID string            `json:"defaultAiId"`
+	MCPServers  []MCPServerConfig `json:"mcpServers"` // MCP服务器配置列表
+	Memory      MemoryConfig      `json:"memory"`     // 记忆管理配置
+	Proxy       ProxyConfig       `json:"proxy"`      // 代理配置
+}
+
+// ProxyMode 代理模式
+type ProxyMode string
+
+const (
+	ProxyModeNone   ProxyMode = "none"   // 无代理，直连
+	ProxyModeSystem ProxyMode = "system" // 使用系统代理
+	ProxyModeCustom ProxyMode = "custom" // 自定义代理
+)
+
+// ProxyConfig 代理配置
+type ProxyConfig struct {
+	Mode      ProxyMode `json:"mode"`
+	CustomURL string    `json:"customUrl"` // 自定义代理地址
 }
 
 // MemoryConfig 记忆管理配置

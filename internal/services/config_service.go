@@ -66,10 +66,9 @@ func (cs *ConfigService) loadConfig() error {
 // defaultConfig 默认配置
 func (cs *ConfigService) defaultConfig() *models.AppConfig {
 	return &models.AppConfig{
-		RefreshInterval: 5000,
-		Theme:           "military",
-		AIConfigs:       []models.AIConfig{},
-		DefaultAIID:     "",
+		Theme:       "military",
+		AIConfigs:   []models.AIConfig{},
+		DefaultAIID: "",
 		Memory: models.MemoryConfig{
 			Enabled:           true,
 			MaxRecentRounds:   3,

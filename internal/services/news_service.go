@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/run-bigpig/jcp/internal/pkg/proxy"
 )
 
 // Telegraph 快讯数据结构
@@ -30,9 +31,7 @@ type NewsService struct {
 // NewNewsService 创建资讯服务
 func NewNewsService() *NewsService {
 	return &NewsService{
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+		client:     proxy.GetManager().GetClientWithTimeout(10 * time.Second),
 		telegraphs: make([]Telegraph, 0),
 	}
 }

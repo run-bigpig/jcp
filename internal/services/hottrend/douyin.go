@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/run-bigpig/jcp/internal/pkg/proxy"
 )
 
 // DouyinFetcher 抖音热点获取器
@@ -15,7 +17,7 @@ type DouyinFetcher struct {
 // NewDouyinFetcher 创建抖音热点获取器
 func NewDouyinFetcher() *DouyinFetcher {
 	return &DouyinFetcher{
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: proxy.GetManager().GetClientWithTimeout(10 * time.Second),
 	}
 }
 

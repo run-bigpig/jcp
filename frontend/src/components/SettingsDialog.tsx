@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Cpu, Bot, ChevronLeft, Plug, Plus, Trash2, Wrench, Sliders, Check, Loader2, Brain, RefreshCw, Download, RotateCcw } from 'lucide-react';
+import { X, Cpu, Bot, ChevronLeft, Plug, Plus, Trash2, Wrench, Sliders, Check, Loader2, Brain, RefreshCw, Download, RotateCcw, Globe } from 'lucide-react';
 import { getConfig, updateConfig, getAvailableTools, ToolInfo } from '../services/configService';
 import { getAgentConfigs, updateAgentConfig, AgentConfig } from '../services/agentConfigService';
 import { getMCPServers, MCPServerConfig, MCPServerStatus, testMCPConnection, getMCPServerTools, MCPToolInfo } from '../services/mcpService';
@@ -15,8 +15,6 @@ interface AIConfig {
   maxTokens: number;
   temperature: number;
   timeout: number;
-  httpProxy: string;
-  httpProxyEnabled: boolean;
   isDefault: boolean;
   // OpenAI Responses API 开关
   useResponses: boolean;
@@ -35,7 +33,16 @@ interface MemoryConfig {
   compressThreshold: number;
 }
 
-type TabType = 'provider' | 'agent' | 'mcp' | 'memory' | 'update';
+// 代理模式类型
+type ProxyMode = 'none' | 'system' | 'custom';
+
+// 代理配置接口
+interface ProxyConfig {
+  mode: ProxyMode;
+  customUrl: string;
+}
+
+type TabType = 'provider' | 'agent' | 'mcp' | 'memory' | 'proxy' | 'update';
 
 interface SettingsDialogProps {
   isOpen: boolean;
@@ -63,12 +70,20 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose 
     maxSummaryLength: 300,
     compressThreshold: 5,
   });
+  const [proxyConfig, setProxyConfig] = useState<ProxyConfig>({
+    mode: 'none',
+    customUrl: '',
+  });
 
   // 原始配置（用于变更检测）
   const [originalConfigs, setOriginalConfigs] = useState<{
     aiConfigs: AIConfig[];
     agentConfigs: AgentConfig[];
     mcpServers: MCPServerConfig[];
+  } | null>(null);
+  // 完整的原始 AppConfig（用于保存时保留其他字段）
+  const [fullConfig, setFullConfig] = useState<{
+    theme: string;
   } | null>(null);
 
   useEffect(() => {
@@ -91,6 +106,17 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose 
     if (config.memory) {
       setMemoryConfig(config.memory);
     }
+    // 加载代理配置
+    if (config.proxy) {
+      setProxyConfig({
+        mode: config.proxy.mode as ProxyMode,
+        customUrl: config.proxy.customUrl || '',
+      });
+    }
+    // 保存完整配置的其他字段
+    setFullConfig({
+      theme: config.theme || 'military',
+    });
     // 加载可用的内置工具列表
     const tools = await getAvailableTools();
     setAvailableTools(tools || []);
@@ -146,7 +172,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose 
   // 保存后关闭
   const handleSaveAndClose = async () => {
     setShowCloseConfirm(false);
-    await handleSave(aiConfigs, agentConfigs, mcpServers, memoryConfig, setSaving, onClose);
+    await handleSave(aiConfigs, agentConfigs, mcpServers, memoryConfig, proxyConfig, fullConfig, setSaving, onClose);
   };
 
   const tabs: { id: TabType; label: string; icon: React.ReactNode }[] = [
@@ -154,6 +180,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose 
     { id: 'agent', label: 'AI专家', icon: <Bot className="h-4 w-4" /> },
     { id: 'mcp', label: 'MCP服务', icon: <Plug className="h-4 w-4" /> },
     { id: 'memory', label: '记忆管理', icon: <Brain className="h-4 w-4" /> },
+    { id: 'proxy', label: '网络代理', icon: <Globe className="h-4 w-4" /> },
     { id: 'update', label: '软件更新', icon: <RefreshCw className="h-4 w-4" /> },
   ];
 
@@ -228,6 +255,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose 
                 onChange={setMemoryConfig}
               />
             )}
+            {activeTab === 'proxy' && (
+              <ProxySettings
+                config={proxyConfig}
+                onChange={setProxyConfig}
+              />
+            )}
             {activeTab === 'update' && (
               <UpdateSettings />
             )}
@@ -235,7 +268,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose 
         </div>
         <Footer
           saving={saving}
-          onSave={() => handleSave(aiConfigs, agentConfigs, mcpServers, memoryConfig, setSaving, onClose)}
+          onSave={() => handleSave(aiConfigs, agentConfigs, mcpServers, memoryConfig, proxyConfig, fullConfig, setSaving, onClose)}
           onClose={handleClose}
         />
       </div>
@@ -324,12 +357,8 @@ const ProviderSettings: React.FC<ProviderSettingsProps> = ({ configs, selectedPr
       maxTokens: 2048,
       temperature: 0.7,
       timeout: 60,
-      httpProxy: '',
-      httpProxyEnabled: false,
       isDefault: configs.length === 0,
-      // OpenAI Responses API 默认关闭
       useResponses: false,
-      // Vertex AI 默认值
       project: '',
       location: 'us-central1',
       credentialsJson: '',
@@ -860,17 +889,21 @@ const handleSave = async (
   agents: AgentConfig[],
   mcpServers: MCPServerConfig[],
   memoryConfig: MemoryConfig,
+  proxyConfig: ProxyConfig,
+  fullConfig: { theme: string } | null,
   setSaving: React.Dispatch<React.SetStateAction<boolean>>,
   onClose: () => void
 ) => {
   setSaving(true);
   try {
-    // 保存 AI 配置、MCP 配置和记忆配置
+    // 保存完整的 AI 配置、MCP 配置、记忆配置和代理配置
     await updateConfig({
+      theme: fullConfig?.theme || 'military',
       aiConfigs: configs,
       defaultAiId: configs.find(c => c.isDefault)?.id || '',
       mcpServers: mcpServers,
       memory: memoryConfig,
+      proxy: proxyConfig,
     } as any);
 
     // 保存所有 Agent 配置（会触发后端重载）
@@ -1290,6 +1323,77 @@ const MCPEditForm: React.FC<MCPEditFormProps> = ({ server, status, tools, onBack
               </div>
             ))}
           </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ========== 代理设置选项卡 ==========
+interface ProxySettingsProps {
+  config: ProxyConfig;
+  onChange: (config: ProxyConfig) => void;
+}
+
+const ProxySettings: React.FC<ProxySettingsProps> = ({ config, onChange }) => {
+  const proxyModes: { value: ProxyMode; label: string; desc: string }[] = [
+    { value: 'none', label: '无代理', desc: '直接连接，不使用任何代理' },
+    { value: 'system', label: '系统代理', desc: '使用操作系统的代理设置' },
+    { value: 'custom', label: '自定义代理', desc: '手动指定代理服务器地址' },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-white font-medium">网络代理</h3>
+        <p className="text-slate-400 text-sm mt-1">
+          配置应用的网络代理，用于访问 AI 服务和外部 API
+        </p>
+      </div>
+
+      {/* 代理模式选择 */}
+      <div className="space-y-3">
+        {proxyModes.map(mode => (
+          <label
+            key={mode.value}
+            className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+              config.mode === mode.value
+                ? 'border-[var(--accent)] bg-[var(--accent)]/10'
+                : 'border-slate-700 hover:border-slate-600'
+            }`}
+          >
+            <input
+              type="radio"
+              name="proxyMode"
+              value={mode.value}
+              checked={config.mode === mode.value}
+              onChange={() => onChange({ ...config, mode: mode.value })}
+              className="mt-1 accent-[var(--accent)]"
+            />
+            <div>
+              <div className="text-white text-sm font-medium">{mode.label}</div>
+              <div className="text-slate-400 text-xs mt-0.5">{mode.desc}</div>
+            </div>
+          </label>
+        ))}
+      </div>
+
+      {/* 自定义代理地址输入 */}
+      {config.mode === 'custom' && (
+        <div className="pt-4 border-t border-slate-700">
+          <label className="block text-sm text-slate-300 mb-2">
+            代理服务器地址
+          </label>
+          <input
+            type="text"
+            value={config.customUrl}
+            onChange={(e) => onChange({ ...config, customUrl: e.target.value })}
+            placeholder="http://127.0.0.1:7890"
+            className="w-full fin-input rounded-lg px-3 py-2 text-white text-sm"
+          />
+          <p className="text-slate-500 text-xs mt-2">
+            支持 HTTP/HTTPS 代理，格式：http://host:port 或 http://user:pass@host:port
+          </p>
         </div>
       )}
     </div>

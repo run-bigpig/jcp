@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/run-bigpig/jcp/internal/pkg/proxy"
 )
 
 // BaiduFetcher 百度热搜获取器
@@ -15,7 +17,7 @@ type BaiduFetcher struct {
 // NewBaiduFetcher 创建百度热搜获取器
 func NewBaiduFetcher() *BaiduFetcher {
 	return &BaiduFetcher{
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: proxy.GetManager().GetClientWithTimeout(10 * time.Second),
 	}
 }
 

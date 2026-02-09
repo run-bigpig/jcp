@@ -270,3 +270,9 @@
     .border-accent\/30 { border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
     .border-accent\/50 { border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
 }
+
+/* 全局拖拽鼠标样式 */
+body.grabbing,
+body.grabbing * {
+    cursor: grabbing !important;
+}

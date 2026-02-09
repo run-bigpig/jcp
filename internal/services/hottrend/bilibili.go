@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/run-bigpig/jcp/internal/pkg/proxy"
 )
 
 // BilibiliFetcher B站热搜获取器
@@ -15,7 +17,7 @@ type BilibiliFetcher struct {
 // NewBilibiliFetcher 创建B站热搜获取器
 func NewBilibiliFetcher() *BilibiliFetcher {
 	return &BilibiliFetcher{
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: proxy.GetManager().GetClientWithTimeout(10 * time.Second),
 	}
 }
 

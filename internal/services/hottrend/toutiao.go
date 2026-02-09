@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/run-bigpig/jcp/internal/pkg/proxy"
 )
 
 // ToutiaoFetcher 头条热榜获取器
@@ -15,7 +17,7 @@ type ToutiaoFetcher struct {
 // NewToutiaoFetcher 创建头条热榜获取器
 func NewToutiaoFetcher() *ToutiaoFetcher {
 	return &ToutiaoFetcher{
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: proxy.GetManager().GetClientWithTimeout(10 * time.Second),
 	}
 }
 

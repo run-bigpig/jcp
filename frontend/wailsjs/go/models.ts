@@ -160,8 +160,6 @@ export namespace models {
 	    maxTokens: number;
 	    temperature: number;
 	    timeout: number;
-	    httpProxy: string;
-	    httpProxyEnabled: boolean;
 	    isDefault: boolean;
 	    useResponses: boolean;
 	    project: string;
@@ -183,8 +181,6 @@ export namespace models {
 	        this.maxTokens = source["maxTokens"];
 	        this.temperature = source["temperature"];
 	        this.timeout = source["timeout"];
-	        this.httpProxy = source["httpProxy"];
-	        this.httpProxyEnabled = source["httpProxyEnabled"];
 	        this.isDefault = source["isDefault"];
 	        this.useResponses = source["useResponses"];
 	        this.project = source["project"];
@@ -224,6 +220,20 @@ export namespace models {
 	        this.isBuiltin = source["isBuiltin"];
 	        this.enabled = source["enabled"];
 	        this.providerId = source["providerId"];
+	    }
+	}
+	export class ProxyConfig {
+	    mode: string;
+	    customUrl: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProxyConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mode = source["mode"];
+	        this.customUrl = source["customUrl"];
 	    }
 	}
 	export class MemoryConfig {
@@ -275,12 +285,12 @@ export namespace models {
 	    }
 	}
 	export class AppConfig {
-	    refreshInterval: number;
 	    theme: string;
 	    aiConfigs: AIConfig[];
 	    defaultAiId: string;
 	    mcpServers: MCPServerConfig[];
 	    memory: MemoryConfig;
+	    proxy: ProxyConfig;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -288,12 +298,12 @@ export namespace models {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.refreshInterval = source["refreshInterval"];
 	        this.theme = source["theme"];
 	        this.aiConfigs = this.convertValues(source["aiConfigs"], AIConfig);
 	        this.defaultAiId = source["defaultAiId"];
 	        this.mcpServers = this.convertValues(source["mcpServers"], MCPServerConfig);
 	        this.memory = this.convertValues(source["memory"], MemoryConfig);
+	        this.proxy = this.convertValues(source["proxy"], ProxyConfig);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -428,6 +438,7 @@ export namespace models {
 		    return a;
 		}
 	}
+	
 	
 	export class Stock {
 	    symbol: string;

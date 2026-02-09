@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/run-bigpig/jcp/internal/pkg/proxy"
 )
 
 const (
@@ -52,9 +54,7 @@ type ResearchReportService struct {
 // NewResearchReportService 创建研报服务
 func NewResearchReportService() *ResearchReportService {
 	return &ResearchReportService{
-		client: &http.Client{
-			Timeout: 15 * time.Second,
-		},
+		client: proxy.GetManager().GetClientWithTimeout(15 * time.Second),
 	}
 }
 

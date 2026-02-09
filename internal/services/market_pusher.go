@@ -22,6 +22,8 @@ const (
 	EventMarketIndicesUpdate = "market:indices:update"
 	EventMarketSubscribe     = "market:subscribe"
 	EventOrderBookSubscribe  = "market:orderbook:subscribe"
+	EventKLineUpdate         = "market:kline:update"
+	EventKLineSubscribe      = "market:kline:subscribe"
 )
 
 // safeCall 安全调用，捕获 panic 避免崩溃
@@ -32,6 +34,12 @@ func safeCall(fn func()) {
 		}
 	}()
 	fn()
+}
+
+// KLineSubscription K线订阅信息
+type KLineSubscription struct {
+	Code   string // 股票代码
+	Period string // K线周期: 1m, 1d, 1w, 1mo
 }
 
 // MarketDataPusher 市场数据推送服务
@@ -45,6 +53,10 @@ type MarketDataPusher struct {
 	subscribedCodes  []string
 	currentOrderBook string // 当前订阅盘口的股票代码
 	mu               sync.RWMutex
+
+	// K线订阅管理
+	klineSub   KLineSubscription
+	klineSubMu sync.RWMutex
 
 	// 快讯缓存（用于检测新快讯）
 	lastTelegraphContent string
@@ -109,6 +121,21 @@ func (p *MarketDataPusher) setupEventListeners() {
 			}
 		}
 	})
+
+	// 监听K线订阅请求
+	runtime.EventsOn(p.ctx, EventKLineSubscribe, func(data ...any) {
+		if len(data) >= 2 {
+			code, _ := data[0].(string)
+			period, _ := data[1].(string)
+			if code != "" && period != "" {
+				p.klineSubMu.Lock()
+				p.klineSub = KLineSubscription{Code: code, Period: period}
+				p.klineSubMu.Unlock()
+				// 切换订阅后立即推送一次
+				go safeCall(p.pushKLineData)
+			}
+		}
+	})
 }
 
 // initSubscriptions 从自选股初始化订阅
@@ -153,12 +180,18 @@ func (p *MarketDataPusher) pushLoop() {
 	marketStatusTicker := time.NewTicker(5 * time.Second)
 	// 大盘指数推送间隔：3秒
 	marketIndicesTicker := time.NewTicker(3 * time.Second)
+	// 分时K线推送间隔：3秒
+	klineMinuteTicker := time.NewTicker(3 * time.Second)
+	// 日/周/月K线推送间隔：5分钟
+	klineDayTicker := time.NewTicker(5 * time.Minute)
 
 	defer stockTicker.Stop()
 	defer orderBookTicker.Stop()
 	defer telegraphTicker.Stop()
 	defer marketStatusTicker.Stop()
 	defer marketIndicesTicker.Stop()
+	defer klineMinuteTicker.Stop()
+	defer klineDayTicker.Stop()
 
 	// 立即推送一次
 	safeCall(p.pushStockData)
@@ -166,6 +199,7 @@ func (p *MarketDataPusher) pushLoop() {
 	safeCall(p.pushTelegraphData)
 	safeCall(p.pushMarketStatus)
 	safeCall(p.pushMarketIndices)
+	safeCall(p.pushKLineData)
 
 	for {
 		select {
@@ -181,6 +215,10 @@ func (p *MarketDataPusher) pushLoop() {
 			safeCall(p.pushMarketStatus)
 		case <-marketIndicesTicker.C:
 			safeCall(p.pushMarketIndices)
+		case <-klineMinuteTicker.C:
+			safeCall(p.pushKLineMinute)
+		case <-klineDayTicker.C:
+			safeCall(p.pushKLineDay)
 		}
 	}
 }
@@ -265,6 +303,73 @@ func (p *MarketDataPusher) pushMarketIndices() {
 		return
 	}
 	runtime.EventsEmit(p.ctx, EventMarketIndicesUpdate, indices)
+}
+
+// pushKLineData 推送K线数据（初始化时调用）
+func (p *MarketDataPusher) pushKLineData() {
+	p.klineSubMu.RLock()
+	sub := p.klineSub
+	p.klineSubMu.RUnlock()
+
+	if sub.Code == "" {
+		return
+	}
+
+	klines, err := p.marketService.GetKLineData(sub.Code, sub.Period, 240)
+	if err != nil {
+		return
+	}
+
+	runtime.EventsEmit(p.ctx, EventKLineUpdate, map[string]any{
+		"code":   sub.Code,
+		"period": sub.Period,
+		"data":   klines,
+	})
+}
+
+// pushKLineMinute 推送分时K线（3秒间隔，仅当订阅周期为1m时推送）
+func (p *MarketDataPusher) pushKLineMinute() {
+	p.klineSubMu.RLock()
+	sub := p.klineSub
+	p.klineSubMu.RUnlock()
+
+	if sub.Code == "" || sub.Period != "1m" {
+		return
+	}
+
+	klines, err := p.marketService.GetKLineData(sub.Code, "1m", 240)
+	if err != nil {
+		return
+	}
+
+	runtime.EventsEmit(p.ctx, EventKLineUpdate, map[string]any{
+		"code":   sub.Code,
+		"period": "1m",
+		"data":   klines,
+	})
+}
+
+// pushKLineDay 推送日/周/月K线（5分钟间隔，仅当订阅周期非1m时推送）
+func (p *MarketDataPusher) pushKLineDay() {
+	p.klineSubMu.RLock()
+	sub := p.klineSub
+	p.klineSubMu.RUnlock()
+
+	// 仅推送日K/周K/月K
+	if sub.Code == "" || sub.Period == "1m" {
+		return
+	}
+
+	klines, err := p.marketService.GetKLineData(sub.Code, sub.Period, 120)
+	if err != nil {
+		return
+	}
+
+	runtime.EventsEmit(p.ctx, EventKLineUpdate, map[string]any{
+		"code":   sub.Code,
+		"period": sub.Period,
+		"data":   klines,
+	})
 }
 
 // AddSubscription 添加订阅

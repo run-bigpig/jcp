@@ -13,6 +13,7 @@ import (
 
 	"github.com/run-bigpig/jcp/internal/logger"
 	"github.com/run-bigpig/jcp/internal/models"
+	"github.com/run-bigpig/jcp/internal/pkg/proxy"
 
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
@@ -77,9 +78,7 @@ type MarketService struct {
 // NewMarketService 创建市场数据服务
 func NewMarketService() *MarketService {
 	return &MarketService{
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+		client:   proxy.GetManager().GetClientWithTimeout(10 * time.Second),
 		cache:    make(map[string]*stockCache),
 		cacheTTL: 2 * time.Second, // 缓存2秒，避免频繁请求
 	}
