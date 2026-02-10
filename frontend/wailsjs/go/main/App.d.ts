@@ -13,6 +13,8 @@ export function AddMCPServer(arg1:models.MCPServerConfig):Promise<string>;
 
 export function AddToWatchlist(arg1:models.Stock):Promise<string>;
 
+export function CancelMeeting(arg1:string):Promise<boolean>;
+
 export function CheckForUpdate():Promise<services.UpdateInfo>;
 
 export function ClearSessionMessages(arg1:string):Promise<string>;
@@ -38,6 +40,10 @@ export function GetHotTrend(arg1:string):Promise<hottrend.HotTrendResult>;
 export function GetHotTrendPlatforms():Promise<Array<hottrend.PlatformInfo>>;
 
 export function GetKLineData(arg1:string,arg2:string,arg3:number):Promise<Array<models.KLineData>>;
+
+export function GetLongHuBangDetail(arg1:string,arg2:string):Promise<Array<models.LongHuBangDetail>>;
+
+export function GetLongHuBangList(arg1:number,arg2:number,arg3:string):Promise<services.LongHuBangListResult>;
 
 export function GetMCPServerTools(arg1:string):Promise<Array<mcp.ToolInfo>>;
 

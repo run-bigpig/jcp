@@ -91,7 +91,7 @@ jobs:
       - name: Build (Windows)
         if: runner.os == 'Windows'
         run: |
-          wails build -platform ${{ matrix.platform }} -tags native_webview2loader -ldflags "-X main.Version=${{ steps.version.outputs.version }}"
+          wails build -platform ${{ matrix.platform }} -tags native_webview2loader -ldflags "-s -w -H=windowsgui -X main.Version=${{ steps.version.outputs.version }}"
 
       - name: Build (macOS)
         if: runner.os == 'macOS'

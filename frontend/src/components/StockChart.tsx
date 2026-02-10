@@ -51,6 +51,8 @@ const Candlestick = (props: any) => {
 };
 
 export const StockChart: React.FC<StockChartProps> = ({ data, period, onPeriodChange, stock }) => {
+  // 确保 data 不为 null
+  const safeData = data || [];
   // 缩放和滑动状态
   const [visibleCount, setVisibleCount] = useState(60);
   const [startIndex, setStartIndex] = useState(0);
@@ -70,23 +72,23 @@ export const StockChart: React.FC<StockChartProps> = ({ data, period, onPeriodCh
       return;
     }
     // 数据变化时调整视图到最新
-    if (data.length > 0) {
-      const newStart = Math.max(0, data.length - visibleCount);
+    if (safeData.length > 0) {
+      const newStart = Math.max(0, safeData.length - visibleCount);
       setStartIndex(newStart);
     }
-  }, [data, period, visibleCount]);
+  }, [safeData, period, visibleCount]);
 
   // 滚轮缩放处理 - 必须在条件返回之前
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
     const delta = e.deltaY > 0 ? 10 : -10;
     setVisibleCount(prev => {
-      const newCount = Math.max(20, Math.min(data.length, prev + delta));
-      const newStart = Math.max(0, data.length - newCount);
+      const newCount = Math.max(20, Math.min(safeData.length, prev + delta));
+      const newStart = Math.max(0, safeData.length - newCount);
       setStartIndex(newStart);
       return newCount;
     });
-  }, [data.length]);
+  }, [safeData.length]);
 
   // 拖拽滑动处理
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -103,10 +105,10 @@ export const StockChart: React.FC<StockChartProps> = ({ data, period, onPeriodCh
     const sensitivity = Math.max(1, Math.floor(visibleCount / 30));
     if (Math.abs(deltaX) > 10) {
       const move = deltaX > 0 ? -sensitivity : sensitivity;
-      setStartIndex(prev => Math.max(0, Math.min(data.length - visibleCount, prev + move)));
+      setStartIndex(prev => Math.max(0, Math.min(safeData.length - visibleCount, prev + move)));
       lastX.current = e.clientX;
     }
-  }, [isDragging, data.length, visibleCount]);
+  }, [isDragging, safeData.length, visibleCount]);
 
   // 全局监听 mouseup，解决鼠标移出组件后松开导致的事件粘连问题
   useEffect(() => {
@@ -133,7 +135,7 @@ export const StockChart: React.FC<StockChartProps> = ({ data, period, onPeriodCh
   }, [isDragging]);
 
   // Guard clause for empty data
-  if (!data || data.length === 0) {
+  if (safeData.length === 0) {
     return (
       <div className="h-full w-full fin-panel flex items-center justify-center">
         <span className="text-slate-500 text-sm animate-pulse">加载市场数据中...</span>
@@ -142,7 +144,7 @@ export const StockChart: React.FC<StockChartProps> = ({ data, period, onPeriodCh
   }
 
   // 计算可见数据
-  const visibleData = data.slice(startIndex, startIndex + visibleCount);
+  const visibleData = safeData.slice(startIndex, startIndex + visibleCount);
   const lastVisible = visibleData[visibleData.length - 1];
 
   // Transform data for the chart
@@ -198,9 +200,9 @@ export const StockChart: React.FC<StockChartProps> = ({ data, period, onPeriodCh
            {isIntraday ? (
              <>
                <span>现价: <span className="text-accent-2">{(stock?.price || lastClose).toFixed(2)}</span></span>
-               <span>均价: <span className="text-yellow-400">{data[data.length - 1].avg?.toFixed(2) || '--'}</span></span>
-               <span>最高: <span className="text-red-400">{(stock?.high || Math.max(...data.map(d => d.high))).toFixed(2)}</span></span>
-               <span>最低: <span className="text-green-400">{(stock?.low || Math.min(...data.map(d => d.low))).toFixed(2)}</span></span>
+               <span>均价: <span className="text-yellow-400">{safeData[safeData.length - 1].avg?.toFixed(2) || '--'}</span></span>
+               <span>最高: <span className="text-red-400">{(stock?.high || Math.max(...safeData.map(d => d.high))).toFixed(2)}</span></span>
+               <span>最低: <span className="text-green-400">{(stock?.low || Math.min(...safeData.map(d => d.low))).toFixed(2)}</span></span>
              </>
            ) : (
              <>

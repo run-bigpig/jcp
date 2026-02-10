@@ -20,6 +20,7 @@ type Registry struct {
 	configService         *services.ConfigService
 	researchReportService *services.ResearchReportService
 	hotTrendService       *hottrend.HotTrendService
+	longHuBangService     *services.LongHuBangService
 	tools                 map[string]tool.Tool
 	toolInfos             map[string]ToolInfo // 工具信息映射
 }
@@ -31,6 +32,7 @@ func NewRegistry(
 	configService *services.ConfigService,
 	researchReportService *services.ResearchReportService,
 	hotTrendService *hottrend.HotTrendService,
+	longHuBangService *services.LongHuBangService,
 ) *Registry {
 	r := &Registry{
 		marketService:         marketService,
@@ -38,6 +40,7 @@ func NewRegistry(
 		configService:         configService,
 		researchReportService: researchReportService,
 		hotTrendService:       hotTrendService,
+		longHuBangService:     longHuBangService,
 		tools:                 make(map[string]tool.Tool),
 		toolInfos:             make(map[string]ToolInfo),
 	}
@@ -70,6 +73,12 @@ func (r *Registry) registerAllTools() {
 
 	// 注册舆情热点工具
 	r.registerTool("get_hottrend", "获取全网舆情热点，支持微博、知乎、B站、百度、抖音、头条等平台的实时热搜榜单", r.createHotTrendTool)
+
+	// 注册龙虎榜工具
+	r.registerTool("get_longhubang", "获取A股龙虎榜数据，包括上榜股票、净买入金额、买卖金额、上榜原因等信息", r.createLongHuBangTool)
+
+	// 注册龙虎榜营业部明细工具
+	r.registerTool("get_longhubang_detail", "获取个股龙虎榜营业部买卖明细，需要提供股票代码和交易日期", r.createLongHuBangDetailTool)
 }
 
 // registerTool 注册单个工具并保存信息

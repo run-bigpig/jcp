@@ -14,6 +14,10 @@ export function AddToWatchlist(arg1) {
   return window['go']['main']['App']['AddToWatchlist'](arg1);
 }
 
+export function CancelMeeting(arg1) {
+  return window['go']['main']['App']['CancelMeeting'](arg1);
+}
+
 export function CheckForUpdate() {
   return window['go']['main']['App']['CheckForUpdate']();
 }
@@ -64,6 +68,14 @@ export function GetHotTrendPlatforms() {
 
 export function GetKLineData(arg1, arg2, arg3) {
   return window['go']['main']['App']['GetKLineData'](arg1, arg2, arg3);
+}
+
+export function GetLongHuBangDetail(arg1, arg2) {
+  return window['go']['main']['App']['GetLongHuBangDetail'](arg1, arg2);
+}
+
+export function GetLongHuBangList(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetLongHuBangList'](arg1, arg2, arg3);
 }
 
 export function GetMCPServerTools(arg1) {

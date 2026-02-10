@@ -386,6 +386,86 @@ export namespace models {
 	        this.ma20 = source["ma20"];
 	    }
 	}
+	export class LongHuBangDetail {
+	    rank: number;
+	    operName: string;
+	    buyAmt: number;
+	    buyPercent: number;
+	    sellAmt: number;
+	    sellPercent: number;
+	    netAmt: number;
+	    direction: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LongHuBangDetail(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.rank = source["rank"];
+	        this.operName = source["operName"];
+	        this.buyAmt = source["buyAmt"];
+	        this.buyPercent = source["buyPercent"];
+	        this.sellAmt = source["sellAmt"];
+	        this.sellPercent = source["sellPercent"];
+	        this.netAmt = source["netAmt"];
+	        this.direction = source["direction"];
+	    }
+	}
+	export class LongHuBangItem {
+	    tradeDate: string;
+	    code: string;
+	    secuCode: string;
+	    name: string;
+	    closePrice: number;
+	    changePercent: number;
+	    netBuyAmt: number;
+	    buyAmt: number;
+	    sellAmt: number;
+	    totalAmt: number;
+	    turnoverRate: number;
+	    freeCap: number;
+	    reason: string;
+	    reasonDetail: string;
+	    accumAmount: number;
+	    dealRatio: number;
+	    netRatio: number;
+	    d1Change: number;
+	    d2Change: number;
+	    d5Change: number;
+	    d10Change: number;
+	    securityType: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LongHuBangItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tradeDate = source["tradeDate"];
+	        this.code = source["code"];
+	        this.secuCode = source["secuCode"];
+	        this.name = source["name"];
+	        this.closePrice = source["closePrice"];
+	        this.changePercent = source["changePercent"];
+	        this.netBuyAmt = source["netBuyAmt"];
+	        this.buyAmt = source["buyAmt"];
+	        this.sellAmt = source["sellAmt"];
+	        this.totalAmt = source["totalAmt"];
+	        this.turnoverRate = source["turnoverRate"];
+	        this.freeCap = source["freeCap"];
+	        this.reason = source["reason"];
+	        this.reasonDetail = source["reasonDetail"];
+	        this.accumAmount = source["accumAmount"];
+	        this.dealRatio = source["dealRatio"];
+	        this.netRatio = source["netRatio"];
+	        this.d1Change = source["d1Change"];
+	        this.d2Change = source["d2Change"];
+	        this.d5Change = source["d5Change"];
+	        this.d10Change = source["d10Change"];
+	        this.securityType = source["securityType"];
+	    }
+	}
 	
 	
 	export class OrderBookItem {
@@ -537,6 +617,38 @@ export namespace models {
 
 export namespace services {
 	
+	export class LongHuBangListResult {
+	    items: models.LongHuBangItem[];
+	    total: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LongHuBangListResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.items = this.convertValues(source["items"], models.LongHuBangItem);
+	        this.total = source["total"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class StockSearchResult {
 	    symbol: string;
 	    name: string;

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/run-bigpig/jcp/internal/adk/mcp"
 	"github.com/run-bigpig/jcp/internal/adk/tools"
@@ -28,6 +29,7 @@ type App struct {
 	marketService      *services.MarketService
 	newsService        *services.NewsService
 	hotTrendService    *hottrend.HotTrendService
+	longHuBangService  *services.LongHuBangService
 	marketPusher       *services.MarketDataPusher
 	meetingService     *meeting.Service
 	sessionService     *services.SessionService
@@ -37,6 +39,10 @@ type App struct {
 	mcpManager         *mcp.Manager
 	memoryManager      *memory.Manager
 	updateService      *services.UpdateService
+
+	// 会议取消管理
+	meetingCancels   map[string]context.CancelFunc
+	meetingCancelsMu sync.RWMutex
 }
 
 // NewApp creates a new App application struct
@@ -70,8 +76,11 @@ func NewApp() *App {
 	marketService := services.NewMarketService()
 	newsService := services.NewNewsService()
 
+	// 初始化龙虎榜服务
+	longHuBangService := services.NewLongHuBangService()
+
 	// 初始化工具注册中心
-	toolRegistry := tools.NewRegistry(marketService, newsService, configService, researchReportService, hotTrendSvc)
+	toolRegistry := tools.NewRegistry(marketService, newsService, configService, researchReportService, hotTrendSvc, longHuBangService)
 
 	// 初始化 MCP 管理器
 	mcpManager := mcp.NewManager()
@@ -124,6 +133,7 @@ func NewApp() *App {
 		marketService:      marketService,
 		newsService:        newsService,
 		hotTrendService:    hotTrendSvc,
+		longHuBangService:  longHuBangService,
 		meetingService:     meetingService,
 		sessionService:     sessionService,
 		agentConfigService: agentConfigService,
@@ -132,6 +142,7 @@ func NewApp() *App {
 		mcpManager:         mcpManager,
 		memoryManager:      memoryManager,
 		updateService:      updateService,
+		meetingCancels:     make(map[string]context.CancelFunc),
 	}
 }
 
@@ -473,6 +484,23 @@ type MeetingMessageRequest struct {
 	ReplyContent string   `json:"replyContent"`
 }
 
+// cancelMeetingInternal 内部取消会议方法
+func (a *App) cancelMeetingInternal(stockCode string) {
+	a.meetingCancelsMu.Lock()
+	if cancel, ok := a.meetingCancels[stockCode]; ok {
+		cancel()
+		delete(a.meetingCancels, stockCode)
+	}
+	a.meetingCancelsMu.Unlock()
+}
+
+// CancelMeeting 取消指定股票的会议（前端调用）
+func (a *App) CancelMeeting(stockCode string) bool {
+	a.cancelMeetingInternal(stockCode)
+	log.Info("会议已取消: %s", stockCode)
+	return true
+}
+
 // SendMeetingMessage 发送会议室消息（@指定成员回复）
 func (a *App) SendMeetingMessage(req MeetingMessageRequest) []models.ChatMessage {
 	// 获取Session
@@ -481,6 +509,22 @@ func (a *App) SendMeetingMessage(req MeetingMessageRequest) []models.ChatMessage
 		log.Warn("session not found: %s", req.StockCode)
 		return []models.ChatMessage{}
 	}
+
+	// 取消之前该股票的会议（如果有）
+	a.cancelMeetingInternal(req.StockCode)
+
+	// 创建可取消的 context
+	meetingCtx, cancel := context.WithCancel(a.ctx)
+	a.meetingCancelsMu.Lock()
+	a.meetingCancels[req.StockCode] = cancel
+	a.meetingCancelsMu.Unlock()
+
+	// 会议结束后清理
+	defer func() {
+		a.meetingCancelsMu.Lock()
+		delete(a.meetingCancels, req.StockCode)
+		a.meetingCancelsMu.Unlock()
+	}()
 
 	// 先保存用户消息
 	userMsg := models.ChatMessage{
@@ -512,15 +556,15 @@ func (a *App) SendMeetingMessage(req MeetingMessageRequest) []models.ChatMessage
 
 	// 判断是否为智能模式（无 @ 任何人）
 	if len(req.MentionIds) == 0 {
-		return a.runSmartMeeting(req.StockCode, stock, req.Content, aiConfig, position)
+		return a.runSmartMeeting(meetingCtx, req.StockCode, stock, req.Content, aiConfig, position)
 	}
 
 	// 原有逻辑：@ 指定专家
-	return a.runDirectMeeting(req, stock, aiConfig, position)
+	return a.runDirectMeeting(meetingCtx, req, stock, aiConfig, position)
 }
 
 // runSmartMeeting 智能会议模式
-func (a *App) runSmartMeeting(stockCode string, stock models.Stock, query string, aiConfig *models.AIConfig, position *models.StockPosition) []models.ChatMessage {
+func (a *App) runSmartMeeting(ctx context.Context, stockCode string, stock models.Stock, query string, aiConfig *models.AIConfig, position *models.StockPosition) []models.ChatMessage {
 	allAgents := a.agentConfigService.GetAllAgents()
 	chatReq := meeting.ChatRequest{
 		Stock:     stock,
@@ -548,7 +592,7 @@ func (a *App) runSmartMeeting(stockCode string, stock models.Stock, query string
 		runtime.EventsEmit(a.ctx, "meeting:progress:"+stockCode, event)
 	}
 
-	responses, err := a.meetingService.RunSmartMeetingWithCallback(a.ctx, aiConfig, chatReq, respCallback, progressCallback)
+	responses, err := a.meetingService.RunSmartMeetingWithCallback(ctx, aiConfig, chatReq, respCallback, progressCallback)
 	if err != nil {
 		log.Error("runSmartMeeting error: %v", err)
 		return []models.ChatMessage{}
@@ -570,7 +614,7 @@ func (a *App) runSmartMeeting(stockCode string, stock models.Stock, query string
 }
 
 // runDirectMeeting 直接 @ 指定专家模式（带事件推送）
-func (a *App) runDirectMeeting(req MeetingMessageRequest, stock models.Stock, aiConfig *models.AIConfig, position *models.StockPosition) []models.ChatMessage {
+func (a *App) runDirectMeeting(ctx context.Context, req MeetingMessageRequest, stock models.Stock, aiConfig *models.AIConfig, position *models.StockPosition) []models.ChatMessage {
 	agentConfigs := a.agentConfigService.GetAgentsByIDs(req.MentionIds)
 	if len(agentConfigs) == 0 {
 		return []models.ChatMessage{}
@@ -584,7 +628,7 @@ func (a *App) runDirectMeeting(req MeetingMessageRequest, stock models.Stock, ai
 		Position:     position,
 	}
 
-	responses, err := a.meetingService.SendMessage(a.ctx, aiConfig, chatReq)
+	responses, err := a.meetingService.SendMessage(ctx, aiConfig, chatReq)
 	if err != nil {
 		log.Error("runDirectMeeting error: %v", err)
 		return []models.ChatMessage{}
@@ -798,4 +842,30 @@ func (a *App) GetCurrentVersion() string {
 		return "unknown"
 	}
 	return a.updateService.GetCurrentVersion()
+}
+
+// GetLongHuBangList 获取龙虎榜列表
+func (a *App) GetLongHuBangList(pageSize, pageNumber int, tradeDate string) *services.LongHuBangListResult {
+	if a.longHuBangService == nil {
+		return nil
+	}
+	result, err := a.longHuBangService.GetLongHuBangList(pageSize, pageNumber, tradeDate)
+	if err != nil {
+		log.Error("获取龙虎榜失败: %v", err)
+		return nil
+	}
+	return result
+}
+
+// GetLongHuBangDetail 获取龙虎榜营业部明细
+func (a *App) GetLongHuBangDetail(code, tradeDate string) []models.LongHuBangDetail {
+	if a.longHuBangService == nil {
+		return nil
+	}
+	details, err := a.longHuBangService.GetStockDetail(code, tradeDate)
+	if err != nil {
+		log.Error("获取龙虎榜明细失败: %v", err)
+		return nil
+	}
+	return details
 }

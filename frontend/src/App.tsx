@@ -6,6 +6,7 @@ import { AgentRoom } from './components/AgentRoom';
 import { SettingsDialog } from './components/SettingsDialog';
 import { PositionDialog } from './components/PositionDialog';
 import { HotTrendDialog } from './components/HotTrendDialog';
+import { LongHuBangDialog } from './components/LongHuBangDialog';
 import { WelcomePage } from './components/WelcomePage';
 import { ThemeSwitcher } from './components/ThemeSwitcher';
 import { getWatchlist, addToWatchlist, removeFromWatchlist } from './services/watchlistService';
@@ -13,7 +14,7 @@ import { getKLineData, getOrderBook } from './services/stockService';
 import { getOrCreateSession, StockSession, updateStockPosition } from './services/sessionService';
 import { useMarketEvents } from './hooks/useMarketEvents';
 import { Stock, KLineData, OrderBook, TimePeriod, Telegraph, MarketIndex, MarketStatus } from './types';
-import { Radio, Settings, List, Minus, Square, X, Copy, Briefcase, TrendingUp } from 'lucide-react';
+import { Radio, Settings, List, Minus, Square, X, Copy, Briefcase, TrendingUp, BarChart3 } from 'lucide-react';
 import logo from './assets/images/logo.png';
 import { GetTelegraphList, OpenURL, WindowMinimize, WindowMaximize, WindowClose } from '../wailsjs/go/main/App';
 import { WindowIsMaximised } from '../wailsjs/runtime/runtime';
@@ -33,6 +34,7 @@ const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [showPosition, setShowPosition] = useState(false);
   const [showHotTrend, setShowHotTrend] = useState(false);
+  const [showLongHuBang, setShowLongHuBang] = useState(false);
   const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
   const [marketIndices, setMarketIndices] = useState<MarketIndex[]>([]);
   const [isMaximized, setIsMaximized] = useState(false);
@@ -272,6 +274,13 @@ const App: React.FC = () => {
 
         <div className="flex items-center gap-3" style={{ '--wails-draggable': 'no-drag' } as React.CSSProperties}>
           <button
+            onClick={() => setShowLongHuBang(true)}
+            className="p-2 rounded-lg fin-panel border fin-divider text-slate-300 hover:text-white hover:border-red-400/40 transition-colors"
+            title="龙虎榜"
+          >
+            <BarChart3 className="h-4 w-4" />
+          </button>
+          <button
             onClick={() => setShowHotTrend(true)}
             className="p-2 rounded-lg fin-panel border fin-divider text-slate-300 hover:text-white hover:border-orange-400/40 transition-colors"
             title="全网热点"
@@ -442,6 +451,7 @@ const App: React.FC = () => {
         }}
       />
       <HotTrendDialog isOpen={showHotTrend} onClose={() => setShowHotTrend(false)} />
+      <LongHuBangDialog isOpen={showLongHuBang} onClose={() => setShowLongHuBang(false)} />
     </div>
   );
 };
