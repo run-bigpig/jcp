@@ -10,5 +10,7 @@ ccjc
 jcp
 mcp-test-client
 scripts
-*_test.go
+# Allow skill binary
+!skill/jcp-stock-analysis/scripts/jcp-api
+!*_test.go
 docs
