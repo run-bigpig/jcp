@@ -300,6 +300,84 @@ curl -X POST http://localhost:8080/configure \
 请从技术面、基本面和风险三个角度分析 000001 平安银行
 ```
 
+### 安装到 OpenClaw
+
+#### 方法 1: 全局安装 (推荐所有用户)
+
+```bash
+# 1. 克隆项目或下载 skill 目录
+git clone https://github.com/NKingpp/jcp.git
+cd jcp
+git checkout feature/openclaw-skill
+
+# 2. 复制到 OpenClaw 全局技能目录
+cp -r skill/jcp-stock-analysis ~/.openclaw/skills/
+
+# 3. 验证安装
+ls ~/.openclaw/skills/jcp-stock-analysis/
+```
+
+安装位置：
+```
+~/.openclaw/skills/jcp-stock-analysis/
+```
+
+#### 方法 2: 项目级别安装
+
+```bash
+# 1. 复制 skill 到你的 workspace/skills 目录
+cp -r skill/jcp-stock-analysis /path/to/workspace/skills/
+
+# 2. 验证安装
+ls /path/to/workspace/skills/jcp-stock-analysis/
+```
+
+#### 方法 3: 从 feature 分支直接使用
+
+OpenClaw 会根据 SKILL.md 的 Frontmatter 自动识别技能。只要 skill 目录在正确的位置即可：
+
+- 全局: `~/.openclaw/skills/jcp-stock-analysis/`
+- 项目: `<workspace>/skills/jcp-stock-analysis/`
+
+### 验证安装
+
+安装完成后，OpenClaw 会自动扫描技能。当用户查询相关主题时（如股票分析、投资建议），JCP Stock Analysis skill 会被自动触发。
+
+**测试触发**:
+```
+分析 600519 的投资价值
+```
+
+如果 OpenClaw 自动调用 jcp-api 服务，说明安装成功！
+
+### 初始化和首次使用
+
+首次使用前的完整流程：
+
+```bash
+# 1. 安装 skill (见上面的安装方法)
+cp -r skill/jcp-stock-analysis ~/.openclaw/skills/
+
+# 2. 启动 API 服务
+cd ~/.openclaw/skills/jcp-stock-analysis/scripts
+./start.sh
+# 或: ./jcp-api
+
+# 3. 配置 LLM API
+curl -X POST http://localhost:8080/configure \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "openai",
+    "baseUrl": "https://integrate.api.nvidia.com/v1/",
+    "apiKey": "your-api-key",
+    "modelName": "moonshotai/kimi-k2.5"
+  }'
+
+# 4. 在 OpenClaw 中测试
+# 直接在 OpenClaw 聊天中输入：
+分析 600519 的投资价值
+```
+
 ### Skill 架构
 
 ```
