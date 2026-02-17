@@ -301,6 +301,7 @@ curl -X POST http://localhost:8080/configure \
 ```
 
 ### 安装到 OpenClaw
+#### 方法 0: 直接复制链接发送给 openclaw，让它自己安装 skill
 
 #### 方法 1: 全局安装 (推荐所有用户)
 
