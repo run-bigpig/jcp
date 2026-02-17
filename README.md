@@ -309,7 +309,7 @@ Base URL: https://integrate.api.nvidia.com/v1/
 API Key :nvapi-xxxxxxxxxxxxx
 Model Name:moonshotai/kimi-k2.5
 ```
-
+配置文件目录：~/.jcp-api/config.json
 #### 方法 1: 全局安装 (推荐所有用户)
 
 ```bash
