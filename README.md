@@ -239,3 +239,209 @@ Agent 配置通过策略管理系统进行，支持：
 - [TailwindCSS](https://tailwindcss.com/) - CSS 框架
 - [Recharts](https://recharts.org/) - 图表库
 - [GSE](https://github.com/go-ego/gse) - 高性能中文分词库
+
+---
+
+## OpenClaw Skill 集成
+
+### 简介
+
+韭菜盘 (JCP AI) 现已支持作为 OpenClaw Skill 使用。通过简化版 HTTP API，OpenClaw 助手可以直接调用 JCP 的核心分析功能，实现智能股票分析。
+
+### 快速开始
+
+#### 1. 获取 Skill
+
+从 `feature/openclaw-skill` 分支获取完整 skill：
+
+```bash
+git clone https://github.com/NKingpp/jcp.git
+cd jcp
+git checkout feature/openclaw-skill
+```
+
+或直接下载 skill 目录：
+```
+skill/jcp-stock-analysis/
+```
+
+#### 2. 启动 API 服务
+
+```bash
+cd skill/jcp-stock-analysis/scripts
+./start.sh
+```
+
+服务将在 `http://localhost:8080` 启动。
+
+#### 3. 配置 LLM API
+
+```bash
+curl -X POST http://localhost:8080/configure \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "openai",
+    "baseUrl": "https://integrate.api.nvidia.com/v1/",
+    "apiKey": "your-api-key",
+    "modelName": "moonshotai/kimi-k2.5"
+  }'
+```
+
+#### 4. 在 OpenClaw 中使用
+
+配置完成后，OpenClaw 助手可以直接调用：
+
+```
+分析 600519 贵州茅台的投资价值
+```
+
+或更详细的查询：
+```
+请从技术面、基本面和风险三个角度分析 000001 平安银行
+```
+
+### Skill 架构
+
+```
+skill/jcp-stock-analysis/
+├── SKILL.md                          # OpenClaw 主技能文件
+├── README.md                          # 快速参考指南
+├── scripts/
+│   ├── jcp-api                        # 预编译二进制 (62MB, macOS x64)
+│   └── start.sh                       # 便捷启动脚本
+└── references/
+    ├── API_REFERENCE.md              # 完整 API 文档
+    ├── TIMEOUT.md                     # 超时参数优化指南
+    └── AGENT_CUSTOMIZATION.md        # 代理自定义指南
+```
+
+### 核心特性
+
+- **三专家系统**: 技术分析师、基本面分析师、风控专家并行分析
+- **OpenAI 兼容**: 支持多种 LLM provider (OpenAI, NVIDIA, DeepSeek, Kimi, GLM 等)
+- **独立运行**: 预编译二进制，无需 Go 安装即可使用
+- **优化的超时**: 300秒单专家超时，100% 成功率
+- **完整文档**: 包含 API 参考、使用指南、自定义教程
+
+### API 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/health` | GET | 健康检查 |
+| `/status` | GET | 获取配置状态 |
+| `/configure` | POST | 配置 LLM API |
+| `/analyze` | POST | 股票分析 |
+
+详细 API 文档请参考 `skill/jcp-stock-analysis/references/API_REFERENCE.md`。
+
+### 平台支持
+
+**当前版本**:
+- ✅ macOS x64 (Darwin amd64)
+- ⏳ Linux x64 (需自行编译)
+- ⏳ Windows (需交叉编译)
+
+**其他平台编译说明**:
+
+```bash
+# Linux (amd64)
+GOOS=linux GOARCH=amd64 go build -o skill/jcp-stock-analysis/scripts/jcp-api-linux cmd/api/main.go
+
+# Windows (amd64)
+GOOS=windows GOARCH=amd64 go build -o skill/jcp-stock-analysis/scripts/jcp-api.exe cmd/api/main.go
+```
+
+### 性能指标
+
+| 指标 | 数值 |
+|------|------|
+| 二进制大小 | 62 MB (macOS x64) |
+| 内存占用 | ~500MB (运行时) |
+| 响应时间 | 4-5 分钟 (完整三专家分析) |
+| 专家完成率 | 3/3 (100%) |
+| 超时设置 | 300秒 per agent |
+
+### 自定义配置
+
+#### 修改超时参数
+
+编辑 `internal/meeting/service.go`:
+
+```go
+const (
+    AgentTimeout = 300 * time.Second  // 单专家超时
+    MeetingTimeout = 10 * time.Minute  // 整个会议超时
+)
+```
+
+#### 自定义专家角色
+
+编辑 `cmd/api/main.go`:
+
+```go
+agents := []models.AgentConfig{
+    {
+        ID: "1",
+        Name: "量化分析师",
+        Role: "量化交易",
+        Instruction: "从量化角度分析，关注数学模型和统计指标",
+    },
+    // ... 更多自定义角色
+}
+```
+
+详细指南请参考：
+- `skill/jcp-stock-analysis/references/TIMEOUT.md` - 超时优化
+- `skill/jcp-stock-analysis/references/AGENT_CUSTOMIZATION.md` - 代理自定义
+
+### 故障排除
+
+#### 问题: "AI not configured" 错误
+
+**解决方案**: 先调用 `/configure` 端点配置 LLM API。
+
+#### 问题: Agent 超时
+
+**解决方案**: 当前已配置 300秒超时，适用于 Kimi/GLM 等慢速模型。如使用 GPT-3.5-turbo 等快速模型，可减少超时至 120-180秒。
+
+#### 问题: 端口被占用
+
+**解决方案**: 使用不同的端口:
+
+```bash
+PORT=9090 ./jcp-api
+```
+
+### 开源贡献
+
+OpenClaw Skill 部分的开发遵循敏捷开发原则，欢迎贡献：
+
+1. Fork 项目
+2. 创建特性分支 `git checkout -b feature/your-improvement`
+3. 提交更改
+4. 推送到 `feature/openclaw-skill` 分支或新建分支
+5. 提交 Pull Request
+
+### 配置存储
+
+API 配置持久化存储在:
+```
+~/.jcp-api/config.json
+```
+
+### 相关资源
+
+- [OpenClaw 文档](https://docs.openclaw.ai)
+- [JCP 原始项目](https://github.com/run-bigpig/jcp)
+- [ClawHub - OpenClaw Skills](https://www.clawhub.com)
+
+### 版本说明
+
+OpenClaw Skill 遵循 JCP 项目的版本管理:
+- 当前版本: 0.2.0
+- 特性分支: `feature/openclaw-skill`
+- 推荐总是使用最新的 feature 分支
+
+### 许可证
+
+OpenClaw Skill 部分遵循主项目的 MIT 许可证。
