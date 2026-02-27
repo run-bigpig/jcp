@@ -399,13 +399,14 @@ const Header: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 };
 
 // ========== Provider 设置选项卡 ==========
-const PROVIDERS = ['openai', 'gemini', 'vertexai'] as const;
+const PROVIDERS = ['openai', 'gemini', 'vertexai', 'anthropic'] as const;
 type ProviderType = typeof PROVIDERS[number];
 
 const PROVIDER_LABELS: Record<ProviderType, string> = {
   openai: 'OpenAI',
   gemini: 'Gemini',
   vertexai: 'Vertex AI',
+  anthropic: 'Anthropic',
 };
 
 interface ProviderSettingsProps {
@@ -637,7 +638,7 @@ const AddAIConfigModal: React.FC<AddAIConfigModalProps> = ({ selectedType, onSel
               <button
                 key={p}
                 onClick={() => onSelectType(p)}
-                className={`flex-1 px-3 py-2 text-sm rounded-lg transition-all ${
+                className={`flex-1 px-2 py-2 text-sm rounded-lg transition-all whitespace-nowrap ${
                   selectedType === p
                     ? 'bg-gradient-to-br from-[var(--accent)] to-[var(--accent-2)] text-white'
                     : (colors.isDark ? 'fin-panel border fin-divider text-slate-400 hover:text-white' : 'fin-panel border fin-divider text-slate-500 hover:text-slate-800')
@@ -1032,6 +1033,7 @@ const getDefaultBaseUrl = (provider: string): string => {
   switch (provider) {
     case 'openai': return 'https://api.openai.com/v1';
     case 'gemini': return 'https://generativelanguage.googleapis.com';
+    case 'anthropic': return 'https://api.anthropic.com';
     default: return '';
   }
 };
@@ -1041,6 +1043,7 @@ const getDefaultModel = (provider: string): string => {
     case 'openai': return 'gpt-5.2';
     case 'gemini': return 'gemini-2.5-flash';
     case 'vertexai': return 'gemini-2.5-flash';
+    case 'anthropic': return 'claude-sonnet-4-20250514';
     default: return '';
   }
 };

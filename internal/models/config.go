@@ -4,9 +4,10 @@ package models
 type AIProvider string
 
 const (
-	AIProviderOpenAI   AIProvider = "openai"
-	AIProviderGemini   AIProvider = "gemini"
-	AIProviderVertexAI AIProvider = "vertexai"
+	AIProviderOpenAI    AIProvider = "openai"
+	AIProviderGemini    AIProvider = "gemini"
+	AIProviderVertexAI  AIProvider = "vertexai"
+	AIProviderAnthropic AIProvider = "anthropic"
 )
 
 // AIConfig AI服务配置
