@@ -167,6 +167,7 @@
     .agent-message-content {
         font-size: 0.875rem;
         line-height: 1.6;
+        text-align: left;
     }
 
     .agent-message-content p {
