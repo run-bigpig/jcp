@@ -1,11 +1,13 @@
 package adk
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -152,7 +154,9 @@ func normalizeAnthropicBaseURL(baseURL string) string {
 	if baseURL == "" {
 		return "https://api.anthropic.com"
 	}
-	return strings.TrimRight(baseURL, "/")
+	baseURL = strings.TrimSpace(strings.TrimRight(baseURL, "/"))
+	baseURL = strings.TrimSuffix(baseURL, "/v1")
+	return baseURL
 }
 
 // createAnthropicModel 创建 Anthropic 模型
@@ -355,8 +359,11 @@ func (f *ModelFactory) testAnthropicConnection(ctx context.Context, config *mode
 		return fmt.Errorf("请求构造失败: %w", err)
 	}
 
-	endpoint := baseURL + "/v1/messages"
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(string(jsonBody)))
+	endpoint, err := url.JoinPath(baseURL, "v1", "messages")
+	if err != nil {
+		return fmt.Errorf("无效 BaseURL: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonBody))
 	if err != nil {
 		return fmt.Errorf("请求创建失败: %w", err)
 	}

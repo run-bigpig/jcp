@@ -10,5 +10,4 @@ ccjc
 jcp
 mcp-test-client
 scripts
-*_test.go
 docs

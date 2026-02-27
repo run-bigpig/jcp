@@ -12,6 +12,20 @@ import (
 
 var convertLog = logger.New("anthropic:convert")
 
+// toToolResultContent 将函数返回值转换为 Anthropic tool_result.content。
+// Anthropic 要求 content 为字符串或内容块数组，这里统一归一为字符串 JSON。
+func toToolResultContent(resp any) (json.RawMessage, error) {
+	if s, ok := resp.(string); ok {
+		b, err := json.Marshal(s)
+		return b, err
+	}
+	b, err := json.Marshal(resp)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(string(b))
+}
+
 // extractTextFromContent 提取 genai.Content 中的纯文本
 func extractTextFromContent(content *genai.Content) string {
 	if content == nil {
@@ -121,14 +135,14 @@ func toAnthropicMessages(contents []*genai.Content) ([]Message, error) {
 
 			// 函数响应 → tool_result
 			if part.FunctionResponse != nil {
-				respJSON, err := json.Marshal(part.FunctionResponse.Response)
+				contentJSON, err := toToolResultContent(part.FunctionResponse.Response)
 				if err != nil {
 					return nil, fmt.Errorf("marshal function response: %w", err)
 				}
 				blocks = append(blocks, ContentBlock{
 					Type:       "tool_result",
 					ToolUseID:  part.FunctionResponse.ID,
-					RawContent: respJSON,
+					RawContent: contentJSON,
 				})
 			}
 		}

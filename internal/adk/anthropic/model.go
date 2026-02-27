@@ -10,6 +10,8 @@ import (
 	"io"
 	"iter"
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/run-bigpig/jcp/internal/logger"
@@ -30,11 +32,17 @@ type AnthropicModel struct {
 	modelName  string
 }
 
+func normalizeBaseURL(baseURL string) string {
+	baseURL = strings.TrimSpace(strings.TrimRight(baseURL, "/"))
+	baseURL = strings.TrimSuffix(baseURL, "/v1")
+	return baseURL
+}
+
 // NewAnthropicModel 创建 Anthropic 模型
 func NewAnthropicModel(modelName, apiKey, baseURL string, httpClient *http.Client) *AnthropicModel {
 	return &AnthropicModel{
 		httpClient: httpClient,
-		baseURL:    strings.TrimRight(baseURL, "/"),
+		baseURL:    normalizeBaseURL(baseURL),
 		apiKey:     apiKey,
 		modelName:  modelName,
 	}
@@ -60,7 +68,10 @@ func (m *AnthropicModel) doRequest(ctx context.Context, ar *MessagesRequest) (*h
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	endpoint := m.baseURL + "/v1/messages"
+	endpoint, err := url.JoinPath(m.baseURL, "v1", "messages")
+	if err != nil {
+		return nil, fmt.Errorf("build endpoint: %w", err)
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
@@ -320,12 +331,14 @@ func (m *AnthropicModel) emitFinalResponse(
 	stopReason string, usage *Usage,
 	yield func(*model.LLMResponse, error) bool,
 ) {
-	// 按 index 顺序聚合所有块
-	for i := 0; i < len(blocks); i++ {
-		bs, ok := blocks[i]
-		if !ok {
-			continue
-		}
+	// 按 index 顺序聚合所有块，避免 map 非连续索引导致内容丢失。
+	indices := make([]int, 0, len(blocks))
+	for idx := range blocks {
+		indices = append(indices, idx)
+	}
+	sort.Ints(indices)
+	for _, idx := range indices {
+		bs := blocks[idx]
 
 		switch bs.blockType {
 		case "thinking":
