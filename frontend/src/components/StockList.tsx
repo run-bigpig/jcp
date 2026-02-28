@@ -171,7 +171,7 @@ export const StockList: React.FC<StockListProps> = ({
                       </button>
                     )}
                   </div>
-                  <div className={`text-xs font-mono truncate ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>{stock.symbol}</div>
+                  <div className={`text-xs font-mono truncate text-left ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>{stock.symbol}</div>
                 </div>
                 <div className="text-right">
                   <div className={`font-mono ${cc.getColorClass(isPositive)}`}>
