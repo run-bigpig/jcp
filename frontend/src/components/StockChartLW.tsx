@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { ZoomIn, ZoomOut, MoveHorizontal } from 'lucide-react';
 import {
   createChart,
@@ -19,9 +19,15 @@ import {
 import { KLineData, TimePeriod, Stock } from '../types';
 import { useTheme } from '../contexts/ThemeContext';
 import { useCandleColor } from '../contexts/CandleColorContext';
+import { ResizeHandle } from './ResizeHandle';
+
+const VOLUME_MIN = 20;
+const VOLUME_MAX = 200;
+const VOLUME_DEFAULT = 72;
 
 interface StockChartProps {
   data: KLineData[];
+  updateMode: 'full' | 'incremental' | 'refresh';
   period: TimePeriod;
   onPeriodChange: (p: TimePeriod) => void;
   stock?: Stock;
@@ -74,7 +80,7 @@ function formatTimeDisplay(timeStr: string): string {
   return timeStr.slice(0, 10) + ' 00:00:00';
 }
 
-export const StockChartLW: React.FC<StockChartProps> = ({ data, period, onPeriodChange, stock }) => {
+export const StockChartLW: React.FC<StockChartProps> = ({ data, updateMode, period, onPeriodChange, stock }) => {
   const { colors } = useTheme();
   const cc = useCandleColor();
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -85,9 +91,18 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, period, onPeriod
   const volumeSeriesRef = useRef<ISeriesApi<SeriesType, Time> | null>(null);
   const maSeriesRefs = useRef<ISeriesApi<SeriesType, Time>[]>([]);
   const seriesTypeRef = useRef<'line' | 'candle' | null>(null);
+  const hasFittedRef = useRef(false);
+  const isIntradayRef = useRef(false);
+
+  const [volumeHeight, setVolumeHeight] = useState(VOLUME_DEFAULT);
+
+  const handleVolumeResize = useCallback((delta: number) => {
+    setVolumeHeight(prev => Math.max(VOLUME_MIN, Math.min(VOLUME_MAX, prev - delta)));
+  }, []);
 
   const safeData = data || [];
   const isIntraday = period === '1m';
+  isIntradayRef.current = isIntraday;
   const preClose = stock?.preClose || 0;
 
   const [hoverData, setHoverData] = React.useState<KLineData | null>(null);
@@ -150,6 +165,7 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, period, onPeriod
       volumeSeriesRef.current = null;
     }
     seriesTypeRef.current = null;
+    hasFittedRef.current = false;
   }, []);
 
   // ========== 唯一的图表创建：组件挂载时创建，卸载时销毁 ==========
@@ -189,6 +205,7 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, period, onPeriod
     });
 
     // resize
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     const resizeObserver = new ResizeObserver(() => {
       if (chartContainerRef.current && volumeContainerRef.current) {
         const w = chartContainerRef.current.clientWidth;
@@ -196,6 +213,15 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, period, onPeriod
         const vh = volumeContainerRef.current.clientHeight;
         if (w > 0 && h > 0) chart.applyOptions({ width: w, height: h });
         if (w > 0 && vh > 0) volumeChart.applyOptions({ width: w, height: vh });
+        // 分时模式下防抖 fitContent，确保最大化/还原后数据填满新宽度
+        // K线模式保留用户当前浏览位置，不强制 fit
+        if (isIntradayRef.current) {
+          if (resizeTimer) clearTimeout(resizeTimer);
+          resizeTimer = setTimeout(() => {
+            chart.timeScale().fitContent();
+            volumeChart.timeScale().fitContent();
+          }, 100);
+        }
       }
     });
     resizeObserver.observe(chartContainerRef.current);
@@ -203,6 +229,7 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, period, onPeriod
 
     // 仅在组件卸载时销毁
     return () => {
+      if (resizeTimer) clearTimeout(resizeTimer);
       resizeObserver.disconnect();
       chart.remove();
       volumeChart.remove();
@@ -212,6 +239,7 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, period, onPeriod
       volumeSeriesRef.current = null;
       maSeriesRefs.current = [];
       seriesTypeRef.current = null;
+      hasFittedRef.current = false;
     };
   }, []); // 空依赖 —— 只执行一次
 
@@ -373,9 +401,16 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, period, onPeriod
       volumeSeriesRef.current.setData(volumeData);
     }
 
-    chart.timeScale().fitContent();
-    volumeChart.timeScale().fitContent();
-  }, [safeData, preClose, isIntraday, chartColors, clearAllSeries]);
+    // full: 用户主动切换股票/周期 → fitContent；refresh: 定时刷新 → 保留缩放；增量仅首次 fit
+    const shouldFit = safeData.length > 0 && (
+      updateMode === 'full' || (!hasFittedRef.current && safeData.length > 1)
+    );
+    if (shouldFit) {
+      chart.timeScale().fitContent();
+      volumeChart.timeScale().fitContent();
+      hasFittedRef.current = true;
+    }
+  }, [safeData, updateMode, preClose, isIntraday, chartColors, clearAllSeries]);
 
   // ========== 十字光标 ==========
   useEffect(() => {
@@ -412,21 +447,21 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, period, onPeriod
     <div className="h-full w-full fin-panel flex flex-col relative">
       {/* 加载提示（叠加在图表上方） */}
       {!hasData && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center fin-panel">
-          <span className={`text-sm animate-pulse ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-            加载市场数据中...
+        <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
+          <span className={`text-sm animate-pulse px-3 py-1 rounded ${colors.isDark ? 'text-slate-400 bg-slate-900/40' : 'text-slate-600 bg-slate-100/70'}`}>
+            暂无K线数据，可切换周期重试...
           </span>
         </div>
       )}
 
       {/* Header */}
-      <div className={`flex items-center justify-between px-2 py-1 border-b fin-divider fin-panel-strong z-10 ${!hasData ? 'invisible' : ''}`}>
-        <div className="flex gap-1">
+      <div className="flex items-center justify-between px-2 py-1 border-b fin-divider fin-panel-strong z-10 flex-nowrap overflow-hidden">
+        <div className="flex gap-1 shrink-0 flex-nowrap">
           {periods.map((p) => (
             <button
               key={p.id}
               onClick={() => onPeriodChange(p.id)}
-              className={`text-xs px-3 py-1 rounded transition-colors ${
+              className={`text-xs px-3 py-1 rounded transition-colors whitespace-nowrap ${
                 period === p.id
                   ? (colors.isDark ? 'bg-slate-800/80' : 'bg-slate-200/80') + ' text-accent-2 font-bold'
                   : (colors.isDark ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/40')
@@ -436,7 +471,7 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, period, onPeriod
             </button>
           ))}
           {!isIntraday && (
-            <div className={`flex items-center gap-2 ml-3 pl-3 border-l ${colors.isDark ? 'border-slate-700' : 'border-slate-300'}`}>
+            <div className={`hidden lg:flex items-center gap-2 ml-3 pl-3 border-l ${colors.isDark ? 'border-slate-700' : 'border-slate-300'}`}>
               <div className={`flex items-center gap-1 text-xs ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>
                 <ZoomIn size={12} />
                 <ZoomOut size={12} />
@@ -451,7 +486,7 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, period, onPeriod
         </div>
 
         {/* 数据信息栏 */}
-        <div className={`text-xs font-mono flex gap-3 ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+        <div className={`text-xs font-mono flex gap-3 min-w-0 overflow-hidden whitespace-nowrap ${colors.isDark ? 'text-slate-400' : 'text-slate-500'} ${!hasData ? 'opacity-60' : ''}`}>
           {isIntraday ? (
             <>
               <span>时间: <span className={colors.isDark ? 'text-slate-300' : 'text-slate-600'}>{displayData ? formatTimeDisplay(displayData.time) : '--'}</span></span>
@@ -497,8 +532,11 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, period, onPeriod
       {/* 主图表区域 */}
       <div className="flex-1 min-h-0" ref={chartContainerRef} />
 
+      {/* 成交量拖拽分隔条 */}
+      <ResizeHandle direction="vertical" onResize={handleVolumeResize} />
+
       {/* 成交量图表区域 */}
-      <div className={`${isIntraday ? 'h-20' : 'h-16'} border-t fin-divider`} ref={volumeContainerRef} />
+      <div className="border-t fin-divider" style={{ height: volumeHeight }} ref={volumeContainerRef} />
     </div>
   );
 };
