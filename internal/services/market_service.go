@@ -36,6 +36,11 @@ const (
 	sinaKLineURL = "http://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=%s&scale=%s&ma=5,10,20&datalen=%d"
 )
 
+const (
+	klineCacheTTLIntraday = 2 * time.Second
+	klineCacheTTLDefault  = 30 * time.Second
+)
+
 // 默认大盘指数代码
 var defaultIndexCodes = []string{
 	"s_sh000001", // 上证指数
@@ -59,6 +64,7 @@ type stockCache struct {
 type klineCache struct {
 	data      []models.KLineData
 	timestamp time.Time
+	ttl       time.Duration
 }
 
 // MarketStatus 市场交易状态
@@ -102,11 +108,11 @@ type MarketService struct {
 // NewMarketService 创建市场数据服务
 func NewMarketService() *MarketService {
 	ms := &MarketService{
-		client:        proxy.GetManager().GetClientWithTimeout(10 * time.Second),
+		client:        proxy.GetManager().GetClientWithTimeout(5 * time.Second),
 		cache:         make(map[string]*stockCache),
 		cacheTTL:      2 * time.Second, // 股票缓存2秒
 		klineCache:    make(map[string]*klineCache),
-		klineCacheTTL: 2 * time.Second, // K线缓存2秒
+		klineCacheTTL: klineCacheTTLDefault, // 日/周/月K使用较长缓存，减少API调用
 	}
 	// 启动缓存清理协程
 	go ms.cleanCacheLoop()
@@ -138,11 +144,25 @@ func (ms *MarketService) cleanExpiredCache() {
 	// 清理K线缓存
 	ms.klineCacheMu.Lock()
 	for key, cached := range ms.klineCache {
-		if now.Sub(cached.timestamp) > 10*time.Second {
+		ttl := cached.ttl
+		if ttl <= 0 {
+			ttl = ms.klineCacheTTL
+		}
+		// 使用 3 倍 TTL 做内存回收，避免活跃缓存被过早清理
+		if now.Sub(cached.timestamp) > ttl*3 {
 			delete(ms.klineCache, key)
 		}
 	}
 	ms.klineCacheMu.Unlock()
+}
+
+// getKLineCacheTTL 返回不同周期的缓存策略
+func (ms *MarketService) getKLineCacheTTL(period string) time.Duration {
+	// 分时需要高时效，避免增量推送读取到过旧缓存
+	if period == "1m" {
+		return klineCacheTTLIntraday
+	}
+	return ms.klineCacheTTL
 }
 
 // GetStockDataWithOrderBook 获取股票实时数据（含真实盘口），带缓存
@@ -392,11 +412,16 @@ func (ms *MarketService) calculateOrderBookTotals(items []models.OrderBookItem) 
 // GetKLineData 获取K线数据（带缓存）
 func (ms *MarketService) GetKLineData(code string, period string, days int) ([]models.KLineData, error) {
 	cacheKey := fmt.Sprintf("%s:%s:%d", code, period, days)
+	ttl := ms.getKLineCacheTTL(period)
 
 	// 检查缓存
 	ms.klineCacheMu.RLock()
 	if cached, ok := ms.klineCache[cacheKey]; ok {
-		if time.Since(cached.timestamp) < ms.klineCacheTTL {
+		cachedTTL := cached.ttl
+		if cachedTTL <= 0 {
+			cachedTTL = ttl
+		}
+		if time.Since(cached.timestamp) < cachedTTL {
 			ms.klineCacheMu.RUnlock()
 			return cached.data, nil
 		}
@@ -414,6 +439,7 @@ func (ms *MarketService) GetKLineData(code string, period string, days int) ([]m
 	ms.klineCache[cacheKey] = &klineCache{
 		data:      klines,
 		timestamp: time.Now(),
+		ttl:       ttl,
 	}
 	ms.klineCacheMu.Unlock()
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { ZoomIn, ZoomOut, MoveHorizontal, Eye, EyeOff } from 'lucide-react';
 import {
   createChart,
@@ -19,6 +19,7 @@ import {
 import { KLineData, TimePeriod, Stock } from '../types';
 import { useTheme } from '../contexts/ThemeContext';
 import { useCandleColor } from '../contexts/CandleColorContext';
+import { ResizeHandle } from './ResizeHandle';
 import { useIndicator } from '../contexts/IndicatorContext';
 import {
   parseTime,
@@ -30,8 +31,13 @@ import {
   calculateKDJ,
 } from '../utils/indicators';
 
+const VOLUME_MIN = 20;
+const VOLUME_MAX = 200;
+const VOLUME_DEFAULT = 72;
+
 interface StockChartProps {
   data: KLineData[];
+  updateMode: 'full' | 'incremental' | 'refresh';
   period: TimePeriod;
   onPeriodChange: (p: TimePeriod) => void;
   stock?: Stock;
@@ -73,7 +79,7 @@ function formatTimeDisplay(timeStr: string): string {
   return timeStr.slice(0, 10) + ' 00:00:00';
 }
 
-export const StockChartLW: React.FC<StockChartProps> = ({ data, period, onPeriodChange, stock }) => {
+export const StockChartLW: React.FC<StockChartProps> = ({ data, updateMode, period, onPeriodChange, stock }) => {
   const { colors } = useTheme();
   const cc = useCandleColor();
   const { config: indicatorConfig, updateIndicator } = useIndicator();
@@ -88,6 +94,14 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, period, onPeriod
   const bollSeriesRefs = useRef<ISeriesApi<SeriesType, Time>[]>([]);
   const subSeriesRefs = useRef<ISeriesApi<SeriesType, Time>[]>([]);
   const seriesTypeRef = useRef<'line' | 'candle' | null>(null);
+  const hasFittedRef = useRef(false);
+  const isIntradayRef = useRef(false);
+
+  const [volumeHeight, setVolumeHeight] = useState(VOLUME_DEFAULT);
+
+  const handleVolumeResize = useCallback((delta: number) => {
+    setVolumeHeight(prev => Math.max(VOLUME_MIN, Math.min(VOLUME_MAX, prev - delta)));
+  }, []);
 
   // series → 指标类型映射（用于点击识别）
   type MainIndicatorType = 'ma' | 'ema' | 'boll';
@@ -511,9 +525,16 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, period, onPeriod
     const subChartTypeToRender: SubChartType = isIntraday ? 'volume' : subChartTypeRef.current;
     renderSubChart(subChartTypeToRender, safeData);
 
-    chart.timeScale().fitContent();
-    volumeChart.timeScale().fitContent();
-  }, [safeData, preClose, isIntraday, chartColors, clearAllSeries, clearSubChart, renderSubChart, indicatorConfig]);
+    // full: 用户主动切换股票/周期 → fitContent；refresh: 定时刷新 → 保留缩放；增量仅首次 fit
+    const shouldFit = safeData.length > 0 && (
+      updateMode === 'full' || (!hasFittedRef.current && safeData.length > 1)
+    );
+    if (shouldFit) {
+      chart.timeScale().fitContent();
+      volumeChart.timeScale().fitContent();
+      hasFittedRef.current = true;
+    }
+  }, [safeData, updateMode, preClose, isIntraday, chartColors, clearAllSeries, clearSubChart, renderSubChart, indicatorConfig]);
 
   // ========== 副图指标禁用时自动回退到成交量 ==========
   useEffect(() => {
@@ -893,8 +914,11 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, period, onPeriod
         </div>
       )}
 
+      {/* 成交量拖拽分隔条 */}
+      <ResizeHandle direction="vertical" onResize={handleVolumeResize} />
+
       {/* 副图区域 */}
-      <div className={`${isIntraday ? 'h-20' : 'h-24'} border-t fin-divider`} ref={volumeContainerRef} />
+      <div className="border-t fin-divider" style={{ height: volumeHeight }} ref={volumeContainerRef} />
     </div>
   );
 };

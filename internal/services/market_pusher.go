@@ -78,7 +78,7 @@ type MarketDataPusher struct {
 	stopChan  chan struct{}
 	stopped   bool
 	ctrlMu    sync.Mutex
-	ready     bool        // 前端是否已准备好
+	ready     bool          // 前端是否已准备好
 	readyChan chan struct{} // 前端准备好信号
 
 	// 防止 runParallel 重入堆积
@@ -227,8 +227,8 @@ func (p *MarketDataPusher) pushLoop() {
 	defer slowTicker.Stop()
 	defer klineDayTicker.Stop()
 
-	// 立即并行推送一次
-	p.runParallel(2*time.Second, p.pushStockData, p.pushOrderBookData,
+	// 立即并行推送一次（启动时5个并发请求，冷启动给足时间）
+	p.runParallel(15*time.Second, p.pushStockData, p.pushOrderBookData,
 		p.pushTelegraphData, p.pushMarketIndices, p.pushKLineData)
 
 	var normalCount int
@@ -241,7 +241,7 @@ func (p *MarketDataPusher) pushLoop() {
 			status := p.getMarketPhase()
 			// 仅交易时段高频推送盘口
 			if status == "trading" {
-				p.runParallel(800*time.Millisecond, p.pushOrderBookData)
+				p.runParallel(2*time.Second, p.pushOrderBookData)
 			}
 		case <-normalTicker.C:
 			normalCount++
@@ -250,29 +250,29 @@ func (p *MarketDataPusher) pushLoop() {
 			switch status {
 			case "trading":
 				// 交易时段：正常频率
-				p.runParallel(2*time.Second, p.pushStockData, p.pushMarketIndices, p.pushKLineMinute)
+				p.runParallel(8*time.Second, p.pushStockData, p.pushMarketIndices, p.pushKLineMinute)
 			case "pre_market":
 				// 集合竞价：推送盘口（虚拟撮合价）和股票，降频
 				if normalCount%3 == 0 {
-					p.runParallel(2*time.Second, p.pushStockData, p.pushOrderBookData, p.pushMarketIndices)
+					p.runParallel(8*time.Second, p.pushStockData, p.pushOrderBookData, p.pushMarketIndices)
 				}
 			case "lunch_break":
 				// 午休：低频推送
 				if normalCount%5 == 0 {
-					p.runParallel(2*time.Second, p.pushStockData, p.pushMarketIndices)
+					p.runParallel(8*time.Second, p.pushStockData, p.pushMarketIndices)
 				}
 			default:
 				// 收盘：30秒一次
 				if normalCount%10 == 0 {
-					p.runParallel(2*time.Second, p.pushStockData, p.pushMarketIndices,
+					p.runParallel(8*time.Second, p.pushStockData, p.pushMarketIndices,
 						p.pushOrderBookData, p.pushKLineData)
 				}
 			}
 		case <-slowTicker.C:
-			p.runParallel(5*time.Second, p.pushTelegraphData)
+			p.runParallel(8*time.Second, p.pushTelegraphData)
 		case <-klineDayTicker.C:
 			if p.getMarketPhase() == "trading" {
-				p.runParallel(5*time.Second, p.pushKLineDay)
+				p.runParallel(8*time.Second, p.pushKLineDay)
 			}
 		}
 	}
@@ -285,7 +285,12 @@ func (p *MarketDataPusher) runParallel(timeout time.Duration, fns ...func()) {
 		// 上一轮推送还未完成，跳过本轮避免 goroutine 堆积
 		return
 	}
-	defer p.pushMu.Unlock()
+	var unlockOnce sync.Once
+	unlock := func() {
+		unlockOnce.Do(func() {
+			p.pushMu.Unlock()
+		})
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(len(fns))
@@ -304,10 +309,14 @@ func (p *MarketDataPusher) runParallel(timeout time.Duration, fns ...func()) {
 
 	select {
 	case <-done:
+		unlock()
 	case <-time.After(timeout):
-		pusherLog.Warn("推送超时，等待任务结束")
-		// 超时后仍等待 goroutine 结束，避免泄漏
-		<-done
+		pusherLog.Warn("推送超时，后台等待当前轮次结束后再释放锁")
+		// 超时后不阻塞调用方，但保持锁直到本轮任务结束，避免重入
+		go func() {
+			<-done
+			unlock()
+		}()
 	}
 }
 

@@ -313,9 +313,55 @@ func (a *App) GetOpenClawStatus() map[string]any {
 	}
 }
 
-// GetWatchlist 获取自选股列表
+// mergeRealtimeStock 合并实时行情字段，保留本地静态字段
+func (a *App) mergeRealtimeStock(base models.Stock, rt models.Stock) models.Stock {
+	merged := base
+	if rt.Name != "" {
+		merged.Name = rt.Name
+	}
+	merged.Price = rt.Price
+	merged.Change = rt.Change
+	merged.ChangePercent = rt.ChangePercent
+	merged.Volume = rt.Volume
+	merged.Amount = rt.Amount
+	merged.Open = rt.Open
+	merged.High = rt.High
+	merged.Low = rt.Low
+	merged.PreClose = rt.PreClose
+	return merged
+}
+
+// GetWatchlist 获取自选股列表（附带实时行情）
 func (a *App) GetWatchlist() []models.Stock {
-	return a.configService.GetWatchlist()
+	list := a.configService.GetWatchlist()
+	if len(list) == 0 {
+		return list
+	}
+
+	// 收集所有股票代码，拉一次实时行情
+	codes := make([]string, len(list))
+	for i, s := range list {
+		codes[i] = s.Symbol
+	}
+	realtime, err := a.marketService.GetStockRealTimeData(codes...)
+	if err != nil || len(realtime) == 0 {
+		return list
+	}
+
+	// 用实时数据填充
+	rtMap := make(map[string]models.Stock, len(realtime))
+	for _, s := range realtime {
+		rtMap[s.Symbol] = s
+	}
+	result := make([]models.Stock, len(list))
+	for i, s := range list {
+		if rt, ok := rtMap[s.Symbol]; ok {
+			result[i] = a.mergeRealtimeStock(s, rt)
+		} else {
+			result[i] = s
+		}
+	}
+	return result
 }
 
 // AddToWatchlist 添加自选股

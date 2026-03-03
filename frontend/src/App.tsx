@@ -28,18 +28,20 @@ import { WindowIsMaximised, WindowSetSize, WindowGetSize } from '../wailsjs/runt
 const LAYOUT_DEFAULTS = {
   leftPanelWidth: 280,
   rightPanelWidth: 384,
-  bottomPanelHeight: 256,
+  bottomPanelHeight: 180,
 };
 const LAYOUT_MIN = {
   leftPanelWidth: 280,
   rightPanelWidth: 384,
-  bottomPanelHeight: 256,
+  bottomPanelHeight: 120,
 };
 const LAYOUT_MAX = {
   leftPanelWidth: 500,
   rightPanelWidth: 700,
   bottomPanelHeight: 450,
 };
+
+type KLineUpdateMode = 'full' | 'incremental' | 'refresh';
 
 const App: React.FC = () => {
   const { colors } = useTheme();
@@ -49,6 +51,7 @@ const App: React.FC = () => {
   const [currentSession, setCurrentSession] = useState<StockSession | null>(null);
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('1m');
   const [kLineData, setKLineData] = useState<KLineData[]>([]);
+  const [kLineUpdateMode, setKLineUpdateMode] = useState<KLineUpdateMode>('full');
   const [orderBook, setOrderBook] = useState<OrderBook>({ bids: [], asks: [] });
   const [marketMessage, setMarketMessage] = useState<string>('市场数据加载中...');
   const [telegraphList, setTelegraphList] = useState<Telegraph[]>([]);
@@ -61,6 +64,7 @@ const App: React.FC = () => {
   const [showLongHuBang, setShowLongHuBang] = useState(false);
   const [marketIndices, setMarketIndices] = useState<MarketIndex[]>([]);
   const [isMaximized, setIsMaximized] = useState(false);
+  const klineRequestIdRef = useRef(0);
 
   // 使用纯前端市场状态判断
   const { status: marketStatus } = useMarketStatus();
@@ -111,6 +115,7 @@ const App: React.FC = () => {
     if (!data || data.code !== selectedSymbol || data.period !== timePeriod) return;
 
     if (data.incremental && data.data.length > 0) {
+      setKLineUpdateMode('incremental');
       // 增量更新：合并最新K线
       setKLineData(prev => {
         if (prev.length === 0) return data.data;
@@ -125,9 +130,32 @@ const App: React.FC = () => {
         return [...prev.slice(-239), newBar]; // 保持240根
       });
     } else {
-      setKLineData(data.data);
+      // 后端定时推送：用 refresh 模式更新数据但保留用户缩放状态
+      if (Array.isArray(data.data) && data.data.length > 0) {
+        setKLineUpdateMode('refresh');
+        setKLineData(data.data);
+      }
     }
   }, [selectedSymbol, timePeriod]);
+
+  const syncWindowMaximizedState = useCallback(async () => {
+    try {
+      const maximized = await WindowIsMaximised();
+      setIsMaximized(maximized);
+    } catch {
+      // ignore runtime query failures and keep current UI state
+    }
+  }, []);
+
+  const toggleWindowMaximize = useCallback(async () => {
+    try {
+      await WindowMaximize();
+      await syncWindowMaximizedState();
+    } catch {
+      // fallback to optimistic toggle when runtime query is unavailable
+      setIsMaximized(prev => !prev);
+    }
+  }, [syncWindowMaximizedState]);
 
   // 保存布局配置（防抖）
   const saveLayoutConfig = useCallback(async (
@@ -331,23 +359,46 @@ const App: React.FC = () => {
   // Load K-line data when symbol or period changes
   useEffect(() => {
     if (!selectedSymbol) return;
-    // 切换时先清空数据，避免闪烁
+    const requestId = ++klineRequestIdRef.current;
+    // 切换时先切回 full 模式，等待全量数据到达
+    setKLineUpdateMode('full');
+    // 清空旧数据，避免切换期间出现“新股票 + 旧K线”错配
     setKLineData([]);
     // 订阅K线推送
     subscribeKLine(selectedSymbol, timePeriod);
+
     const loadKLineData = async () => {
-      // 分时图需要更多数据点（1分钟K线，一天约240根）
-      const dataLen = timePeriod === '1m' ? 250 : 60;
-      const data = await getKLineData(selectedSymbol, timePeriod, dataLen);
-      setKLineData(data);
+      // 与后端推送统一数据长度，降低周/月K空响应概率
+      const dataLen = timePeriod === '1m' ? 250 : 240;
+      const maxRetries = 2;
+      for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+        if (requestId !== klineRequestIdRef.current) return;
+        try {
+          const data = await getKLineData(selectedSymbol, timePeriod, dataLen);
+          if (requestId !== klineRequestIdRef.current) return;
+          if (Array.isArray(data) && data.length > 0) {
+            setKLineUpdateMode('full');
+            setKLineData(data);
+            return;
+          }
+          console.warn(`[kline] empty data for ${selectedSymbol} ${timePeriod}, attempt=${attempt + 1}`);
+        } catch (err) {
+          if (requestId !== klineRequestIdRef.current) return;
+          console.error(`[kline] load failed for ${selectedSymbol} ${timePeriod}, attempt=${attempt + 1}`, err);
+        }
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 600));
+        }
+      }
     };
-    loadKLineData();
+
+    void loadKLineData();
   }, [selectedSymbol, timePeriod, subscribeKLine]);
 
   // 初始化窗口最大化状态
   useEffect(() => {
-    WindowIsMaximised().then(setIsMaximized);
-  }, []);
+    void syncWindowMaximizedState();
+  }, [syncWindowMaximizedState]);
 
   if (loading) return <div className="h-screen w-screen flex items-center justify-center fin-app text-white">加载中...</div>;
 
@@ -361,7 +412,16 @@ const App: React.FC = () => {
   return (
     <div className="flex flex-col h-screen text-slate-100 font-sans fin-app">
       {/* Top Navbar */}
-      <header className="h-14 fin-panel border-b fin-divider flex items-center px-4 justify-between shrink-0 z-20" style={{ '--wails-draggable': 'drag' } as React.CSSProperties}>
+      <header
+        className="h-14 fin-panel border-b fin-divider flex items-center px-4 justify-between shrink-0 z-20"
+        style={{ '--wails-draggable': 'drag' } as React.CSSProperties}
+        onDoubleClick={(e) => {
+          // 排除 no-drag 区域的双击
+          const target = e.target as HTMLElement;
+          if (target.closest('[style*="no-drag"]') || target.closest('button') || target.closest('input')) return;
+          void toggleWindowMaximize();
+        }}
+      >
         <div className="flex items-center gap-2" style={{ '--wails-draggable': 'no-drag' } as React.CSSProperties}>
           <img src={logo} alt="logo" className="h-8 w-8 rounded-lg" />
           <span className={`font-bold text-lg tracking-tight ${colors.isDark ? 'text-white' : 'text-slate-800'}`}>韭菜盘 <span className="text-accent-2">AI</span></span>
@@ -454,7 +514,7 @@ const App: React.FC = () => {
               <Minus className="h-4 w-4" />
             </button>
             <button
-              onClick={() => { WindowMaximize(); setIsMaximized(!isMaximized); }}
+              onClick={() => { void toggleWindowMaximize(); }}
               className={`p-1.5 rounded transition-colors ${colors.isDark ? 'hover:bg-slate-700/50 text-slate-400 hover:text-white' : 'hover:bg-slate-200/50 text-slate-500 hover:text-slate-900'}`}
               title={isMaximized ? "还原" : "最大化"}
             >
@@ -556,6 +616,7 @@ const App: React.FC = () => {
             <div className="flex-1 p-1 relative min-h-0">
                <StockChartLW
                   data={kLineData}
+                  updateMode={kLineUpdateMode}
                   period={timePeriod}
                   onPeriodChange={setTimePeriod}
                   stock={selectedStock}
