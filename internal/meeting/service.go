@@ -29,7 +29,7 @@ var log = logger.New("Meeting")
 // 超时配置常量
 const (
 	MeetingTimeout       = 10 * time.Minute // 整个会议的最大时长
-	AgentTimeout         = 3 * time.Minute  // 单个专家发言的最大时长
+	AgentTimeout         = 5 * time.Minute  // 单个专家发言的最大时长
 	ModeratorTimeout     = 2 * time.Minute  // 小韭菜分析/总结的最大时长
 	ModelCreationTimeout = 15 * time.Second // 模型创建的最大时长
 )
@@ -864,24 +864,32 @@ func (s *Service) runSingleAgent(
 					Detail: part.FunctionResponse.Name,
 				})
 			}
-			if part.Text != "" {
-				// streaming 模式下只累积 Partial 片段，避免重复
-				if progressCallback != nil {
-					if event.LLMResponse.Partial {
-						sb.WriteString(part.Text)
-						progressCallback(ProgressEvent{
-							Type: "streaming", AgentID: cfg.ID, AgentName: cfg.Name,
-							Content: part.Text,
-						})
-					}
-				} else {
+			if part.Text == "" {
+				continue
+			}
+			// streaming 模式下只累积 Partial 片段，避免重复；非 streaming 直接累积
+			if progressCallback != nil {
+				if event.LLMResponse.Partial {
+					sb.WriteString(part.Text)
+					progressCallback(ProgressEvent{
+						Type: "streaming", AgentID: cfg.ID, AgentName: cfg.Name,
+						Content: part.Text,
+					})
+				} else if sb.Len() == 0 {
+					// 兜底：若未收到 Partial 片段，保留一次性响应内容
 					sb.WriteString(part.Text)
 				}
+			} else {
+				sb.WriteString(part.Text)
 			}
 		}
 	}
 
-	return openai.FilterVendorToolCallMarkers(sb.String()), nil
+	cleaned := openai.FilterVendorToolCallMarkers(sb.String())
+	if cleaned == "" {
+		return "", fmt.Errorf("模型返回空内容")
+	}
+	return cleaned, nil
 }
 
 // filterAgentsOrdered 按指定顺序筛选专家（保持小韭菜选择的顺序）

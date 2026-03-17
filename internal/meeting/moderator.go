@@ -44,7 +44,9 @@ type DiscussionEntry struct {
 // Analyze 分析用户意图并选择专家
 func (m *Moderator) Analyze(ctx context.Context, stock *models.Stock, query string, agents []models.AgentConfig) (*ModeratorDecision, error) {
 	prompt := m.buildAnalyzePrompt(stock, query, agents)
-	content, err := m.generate(ctx, prompt)
+	content, err := retryRun(ctx, MaxAgentRetries, func() (string, error) {
+		return m.generate(ctx, prompt)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("moderator analyze error: %w", err)
 	}
@@ -54,7 +56,9 @@ func (m *Moderator) Analyze(ctx context.Context, stock *models.Stock, query stri
 // Summarize 总结讨论并给出结论
 func (m *Moderator) Summarize(ctx context.Context, stock *models.Stock, query string, history []DiscussionEntry) (string, error) {
 	prompt := m.buildSummarizePrompt(stock, query, history)
-	return m.generate(ctx, prompt)
+	return retryRun(ctx, MaxAgentRetries, func() (string, error) {
+		return m.generate(ctx, prompt)
+	})
 }
 
 // generate 调用 LLM 生成内容
@@ -82,7 +86,11 @@ func (m *Moderator) generate(ctx context.Context, prompt string) (string, error)
 		}
 	}
 	// 过滤第三方工具调用标记后返回
-	return openai.FilterVendorToolCallMarkers(result.String()), nil
+	cleaned := openai.FilterVendorToolCallMarkers(result.String())
+	if cleaned == "" {
+		return "", fmt.Errorf("模型返回空内容")
+	}
+	return cleaned, nil
 }
 
 // buildAnalyzePrompt 构建意图分析 Prompt
