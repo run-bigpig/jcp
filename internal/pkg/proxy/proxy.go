@@ -3,6 +3,7 @@
 package proxy
 
 import (
+	"crypto/tls"
 	"net"
 	"net/http"
 	"net/url"
@@ -79,16 +80,31 @@ func (m *Manager) GetClientWithTimeout(timeout time.Duration) *http.Client {
 
 // rebuildTransport 根据当前配置重建 Transport
 func (m *Manager) rebuildTransport() {
+	// 自定义 TLS 配置，避免 Schannel 问题
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		MaxVersion: tls.VersionTLS13,
+		CipherSuites: []uint16{
+			tls.TLS_AES_128_GCM_SHA256,
+			tls.TLS_AES_256_GCM_SHA384,
+			tls.TLS_CHACHA20_POLY1305_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+		},
+	}
+
 	m.transport = &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		ForceAttemptHTTP2:     true, // 与 http.DefaultTransport 保持一致
+		ForceAttemptHTTP2:     false,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		TLSClientConfig:       tlsConfig,
 	}
 
 	switch m.config.Mode {

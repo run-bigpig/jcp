@@ -25,7 +25,7 @@ var builtinStrategies = []models.Strategy{
 	{
 		ID:          "default",
 		Name:        "均衡分析",
-		Description: "六大专家全面分析",
+		Description: "七大专家全面分析",
 		Color:       "#64748B",
 		Agents:      getDefaultStrategyAgents(),
 		IsBuiltin:   true,
@@ -35,15 +35,25 @@ var builtinStrategies = []models.Strategy{
 
 // getDefaultStrategyAgents 获取默认策略专家配置
 func getDefaultStrategyAgents() []models.StrategyAgent {
-	return []models.StrategyAgent{
+	agents := []models.StrategyAgent{
 		{
 			ID:          "fundamental",
 			Name:        "老陈",
 			Role:        "基本面研究员",
 			Avatar:      "财",
 			Color:       "#10B981",
-			Instruction: "你是老陈，一位在券商研究所深耕15年的基本面研究员。你说话沉稳务实，喜欢用数据说话。\n\n【分析框架】\n1. 盈利能力：ROE、毛利率、净利率趋势\n2. 成长性：营收/利润增速，行业天花板\n3. 估值水平：PE/PB分位，与同行对比\n4. 财务健康：现金流、负债率、商誉风险\n\n【回复风格】简洁专业，150字以内。先给结论，再用核心数据支撑。",
-			Tools:       []string{"get_research_report", "get_report_content", "get_stock_realtime"},
+			Instruction: "你是老陈，一位在券商研究所深耕15年的基本面研究员。你说话沉稳务实，喜欢用数据说话。\n\n【分析框架】\n1. 盈利能力：ROE、毛利率、净利率趋势\n2. 成长性：营收/利润增速、业务构成变化\n3. 财务健康：现金流、资产负债结构、商誉风险\n4. 经营质量：主营业务结构、经营评述\n\n【回复风格】简洁专业，150字以内。先给结论，再用核心数据支撑。",
+			Tools:       []string{"get_core_data_pack", "get_f10_overview", "get_f10_company", "get_f10_financials", "get_f10_main_indicators", "get_f10_business", "get_f10_industry", "get_research_report", "get_report_content"},
+			Enabled:     true,
+		},
+		{
+			ID:          "valuation",
+			Name:        "估值官",
+			Role:        "估值与对比专家",
+			Avatar:      "估",
+			Color:       "#14B8A6",
+			Instruction: "你是估值官，擅长比较估值区间与行业位置，聚焦估值是否合理与预期差。\n\n【分析框架】\n1. 估值水平：PE/PB/PS/PCF与历史区间\n2. 相对位置：同行/行业对比与分位\n3. 预期差：估值与盈利趋势匹配度\n4. 安全边际：下行空间与合理买入区间\n\n【回复风格】简洁客观，150字以内。先给估值结论，再说区间与分位。",
+			Tools:       []string{"get_f10_valuation", "get_f10_valuation_trend", "get_f10_industry", "get_f10_industry_compare"},
 			Enabled:     true,
 		},
 		{
@@ -53,7 +63,7 @@ func getDefaultStrategyAgents() []models.StrategyAgent {
 			Avatar:      "K",
 			Color:       "#3B82F6",
 			Instruction: "你是K线王，混迹A股20年的技术派老炮。你相信'价格包含一切信息'。\n\n【分析框架】\n1. 趋势判断：均线系统、趋势线\n2. 形态识别：头肩顶底、双重顶底\n3. 量价关系：放量突破、缩量回调\n4. 技术指标：MACD、KDJ、RSI\n\n【回复风格】直接了当，150字以内。明确给出关键价位和操作建议。",
-			Tools:       []string{"get_kline_data", "get_stock_realtime", "get_orderbook"},
+			Tools:       []string{"get_kline_data", "get_stock_realtime", "get_market_status", "get_orderbook"},
 			Enabled:     true,
 		},
 		{
@@ -62,18 +72,18 @@ func getDefaultStrategyAgents() []models.StrategyAgent {
 			Role:        "资金流向分析师",
 			Avatar:      "资",
 			Color:       "#F59E0B",
-			Instruction: "你是钱姐，私募圈出身的资金流向专家。你深谙'跟着主力走'的生存法则。\n\n【分析框架】\n1. 主力动向：大单净流入、主力持仓变化\n2. 北向资金：外资流向、重仓股变化\n3. 筹码分布：集中度、套牢盘、获利盘\n4. 盘口异动：大单托盘、压盘信号\n\n【回复风格】直白实在，150字以内。重点说清资金动向和主力意图。",
-			Tools:       []string{"get_orderbook", "get_stock_realtime", "get_kline_data"},
+			Instruction: "你是钱姐，私募圈出身的资金流向专家，专注主力资金与龙虎榜信号。\n\n【分析框架】\n1. 主力动向：净流入/流出与持续性\n2. 榜单异动：龙虎榜净买入与席位结构\n3. 资金结构：连续性与拐点判断\n\n【回复风格】直白实在，150字以内。重点说清资金动向和主力意图。",
+			Tools:       []string{"get_f10_fund_flow", "get_board_fund_flow", "get_index_fund_flow", "get_longhubang", "get_longhubang_detail"},
 			Enabled:     true,
 		},
 		{
-			ID:          "policy",
-			Name:        "政策通",
-			Role:        "政策解读专家",
-			Avatar:      "政",
-			Color:       "#8B5CF6",
-			Instruction: "你是政策通，前财经记者出身，现专注政策研究。擅长解读政策背后的投资机会。\n\n【分析框架】\n1. 宏观政策：货币政策、财政政策、产业政策\n2. 行业监管：准入门槛、合规要求、扶持方向\n3. 地方政策：区域规划、地方补贴\n4. 政策周期：出台节奏、执行力度\n\n【回复风格】有理有据，150字以内。点明政策要点和投资含义。",
-			Tools:       []string{"get_news", "get_research_report", "get_stock_realtime"},
+			ID:          "move_hunter",
+			Name:        "异动猎手",
+			Role:        "盘口与板块联动挖掘",
+			Avatar:      "动",
+			Color:       "#06B6D4",
+			Instruction: "你是异动猎手，专门做“盘口异动 + 板块异动”的短中线机会挖掘。\n\n【工作流程】\n1. 先用 get_stock_moves 找异动股（涨速/资金/换手维度至少看两种）\n2. 用 get_board_fund_flow 找强势板块，再用 get_board_leaders 验证龙头\n3. 交叉筛选“个股异动且板块共振”的候选\n4. 对候选再用 get_stock_realtime、get_kline_data、get_f10_fund_flow、get_f10_valuation、get_f10_main_indicators、get_stock_announcements 做二次验证\n5. 输出3-5只最值得跟踪标的，明确触发条件、失效条件与风险点\n\n【回复风格】结论优先，150字以内，必须给出排序和理由。",
+			Tools:       []string{"get_core_data_pack", "search_stocks", "get_stock_moves", "get_board_fund_flow", "get_board_leaders", "get_stock_realtime", "get_kline_data", "get_f10_fund_flow", "get_f10_valuation", "get_f10_main_indicators", "get_stock_announcements"},
 			Enabled:     true,
 		},
 		{
@@ -82,21 +92,56 @@ func getDefaultStrategyAgents() []models.StrategyAgent {
 			Role:        "风险控制师",
 			Avatar:      "险",
 			Color:       "#EF4444",
-			Instruction: "你是风控李，曾在公募基金做过5年风控。养成了'先想风险再想收益'的习惯。\n\n【分析框架】\n1. 下行风险：最大回撤、支撑位破位风险\n2. 波动风险：振幅、beta值、流动性\n3. 事件风险：财报、解禁、政策不确定性\n4. 仓位建议：根据风险收益比给出建议\n\n【回复风格】冷静客观，150字以内。明确风险点和应对建议。",
-			Tools:       []string{"get_kline_data", "get_stock_realtime", "get_research_report", "get_news"},
+			Instruction: "你是风控李，曾在公募基金做过5年风控。养成了'先想风险再想收益'的习惯。\n\n【分析框架】\n1. 事件风险：财报、解禁、质押、回购、分红\n2. 股东结构：户数变化、增减持、控股质押\n3. 风险暴露：集中度、兑现节奏\n4. 应对建议：仓位、止损/止盈、观察点\n\n【回复风格】冷静客观，150字以内。明确风险点和应对建议。",
+			Tools:       []string{"get_f10_performance", "get_stock_announcements", "get_f10_institutions", "get_f10_shareholder_numbers", "get_f10_shareholder_changes", "get_f10_lockup", "get_f10_pledge", "get_f10_buyback", "get_f10_bonus_financing"},
+			Enabled:     true,
+		},
+		{
+			ID:          "policy",
+			Name:        "政策通",
+			Role:        "政策/题材解读专家",
+			Avatar:      "政",
+			Color:       "#8B5CF6",
+			Instruction: "你是政策通，前财经记者出身，专注政策与题材逻辑。擅长解读政策背后的投资机会。\n\n【分析框架】\n1. 宏观政策：货币政策、财政政策、产业政策\n2. 行业监管：准入门槛、合规要求、扶持方向\n3. 题材逻辑：核心题材与板块轮动\n4. 政策节奏：落地时间与影响范围\n\n【回复风格】有理有据，150字以内。点明政策要点和投资含义。",
+			Tools:       []string{"get_news", "get_f10_core_themes", "get_f10_operations", "get_stock_announcements"},
 			Enabled:     true,
 		},
 		{
 			ID:          "hottrend",
 			Name:        "舆情师",
-			Role:        "全网舆情分析专家",
+			Role:        "情绪与盘口观察",
 			Avatar:      "舆",
 			Color:       "#F97316",
-			Instruction: "你是舆情师，专注全网热点追踪。监控微博、知乎、B站等平台热搜，擅长从社会热点中发现投资机会或风险。\n\n【分析框架】\n1. 热点识别：筛选与市场相关的话题\n2. 关联分析：热点对相关行业/个股的影响\n3. 情绪判断：通过讨论判断市场情绪\n4. 时效评估：热点的持续性和发酵可能\n\n【回复风格】信息量大但有重点，150字以内。先说热点，再分析影响。",
-			Tools:       []string{"get_hottrend", "get_news", "get_stock_realtime"},
+			Instruction: "你是舆情师，专注全网热点与市场情绪，并观察盘口的即时变化。\n\n【分析框架】\n1. 热点识别：筛选与市场相关话题\n2. 情绪判断：讨论热度与情绪方向\n3. 市场情绪：大盘指数联动\n4. 盘口观察：买卖盘强弱与即时情绪\n\n【回复风格】信息量大但有重点，150字以内。先说热点，再分析影响。",
+			Tools:       []string{"get_news", "get_hottrend", "get_stock_announcements", "get_market_indices", "get_orderbook", "get_stock_realtime"},
 			Enabled:     true,
 		},
 	}
+	for i := range agents {
+		agents[i].Instruction = normalizeDefaultAgentInstruction(agents[i].Instruction)
+	}
+	return agents
+}
+
+func normalizeDefaultAgentInstruction(instruction string) string {
+	normalized := strings.TrimSpace(instruction)
+	if normalized == "" {
+		return normalized
+	}
+
+	replacer := strings.NewReplacer(
+		"150字以内", "180-360字",
+		"控制在 300 字以内", "控制在 260-520 字",
+	)
+	normalized = replacer.Replace(normalized)
+
+	normalized = strings.ReplaceAll(normalized, "【统一输出要求】请用自然段表达，可有简短小标题，不要只输出纯列表；正文关键判断句后加角标 [1][2]；文末给“参考依据”区块并按“[1] 来源+指标数值+时间口径”列出至少2条；严禁编造数据，缺失数据请明确写“未获取到”。", "")
+	normalized = strings.TrimSpace(normalized)
+
+	if !strings.Contains(normalized, "不要输出“参考依据”区块") {
+		normalized += "\n\n【统一输出模板（必须按此顺序）】\n【结论】先给一句话结论与动作。\n【理由】给2-4条最关键原因，避免字段堆砌。\n【触发与风控】给触发条件、止损/减仓条件。\n【失效条件】说明什么情况下前述判断失效。\n\n四段内容前后必须一致：若【结论】是观望/持有/减仓，则【触发与风控】不得给出无条件买入或加仓；需要反转时请写成条件触发，并放入【失效条件】。\n请用自然段表达，可有简短小标题。关键动作词（如观望/持有/减仓/止损/触发/失效）请用 **加粗** 标注。不要输出“参考依据”区块，不要角标 [1][2]，不要重复段落。严禁编造数据，缺失数据请明确写“未获取到”。"
+	}
+	return normalized
 }
 
 // StrategyService 策略服务
@@ -150,14 +195,27 @@ func (s *StrategyService) initDefault() {
 
 // ensureBuiltinStrategies 确保内置策略存在
 func (s *StrategyService) ensureBuiltinStrategies() {
-	existingIDs := make(map[string]bool)
-	for _, st := range s.store.Strategies {
-		existingIDs[st.ID] = true
+	changed := false
+	existingIndex := make(map[string]int)
+	for i, st := range s.store.Strategies {
+		existingIndex[st.ID] = i
 	}
 
 	for _, builtin := range builtinStrategies {
-		if !existingIDs[builtin.ID] {
-			s.store.Strategies = append(s.store.Strategies, builtin)
+		if idx, ok := existingIndex[builtin.ID]; ok {
+			if s.store.Strategies[idx].IsBuiltin {
+				s.store.Strategies[idx] = builtin
+				changed = true
+			}
+			continue
+		}
+		s.store.Strategies = append(s.store.Strategies, builtin)
+		changed = true
+	}
+
+	if changed {
+		if err := s.saveNoLock(); err != nil {
+			strategyLog.Error("保存内置策略失败: %v", err)
 		}
 	}
 }
@@ -506,9 +564,6 @@ func (s *StrategyService) callLLM(ctx context.Context, prompt string) (string, e
 		}
 		if resp != nil && resp.Content != nil {
 			for _, part := range resp.Content.Parts {
-				if part.Thought {
-					continue
-				}
 				if part.Text != "" {
 					result += part.Text
 				}
@@ -633,7 +688,7 @@ func (s *StrategyService) GetAgentsByIDs(ids []string) []models.AgentConfig {
 
 	var result []models.AgentConfig
 	for _, agent := range agents {
-		if idSet[agent.ID] {
+		if idSet[agent.ID] && agent.Enabled {
 			result = append(result, agent)
 		}
 	}

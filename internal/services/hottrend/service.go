@@ -1,10 +1,11 @@
 package hottrend
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
-
-	"github.com/run-bigpig/jcp/internal/pkg/paths"
 )
 
 // HotTrendService 舆情热点聚合服务
@@ -14,9 +15,12 @@ type HotTrendService struct {
 }
 
 // NewHotTrendService 创建舆情热点服务
-func NewHotTrendService() (*HotTrendService, error) {
+func NewHotTrendService(dataDir string) (*HotTrendService, error) {
 	// 获取缓存目录
-	cacheDir := paths.EnsureCacheDir("hottrend")
+	cacheDir, err := getCacheDir(dataDir)
+	if err != nil {
+		return nil, err
+	}
 
 	// 创建文件缓存，TTL 5分钟
 	cache, err := NewFileCache(cacheDir, 5*time.Minute)
@@ -38,6 +42,19 @@ func NewHotTrendService() (*HotTrendService, error) {
 		fetchers: fetchers,
 		cache:    cache,
 	}, nil
+}
+
+// getCacheDir 获取缓存目录
+func getCacheDir(dataDir string) (string, error) {
+	if strings.TrimSpace(dataDir) != "" {
+		return filepath.Join(dataDir, "cache", "hottrend"), nil
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(homeDir, ".jcp", "cache", "hottrend"), nil
 }
 
 // GetPlatforms 获取支持的平台列表

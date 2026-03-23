@@ -18,10 +18,6 @@ export function AddToWatchlist(arg1) {
   return window['go']['main']['App']['AddToWatchlist'](arg1);
 }
 
-export function CancelInterruptedMeeting(arg1) {
-  return window['go']['main']['App']['CancelInterruptedMeeting'](arg1);
-}
-
 export function CancelMeeting(arg1) {
   return window['go']['main']['App']['CancelMeeting'](arg1);
 }
@@ -74,12 +70,28 @@ export function GetAvailableTools() {
   return window['go']['main']['App']['GetAvailableTools']();
 }
 
+export function GetBoardFundFlow(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetBoardFundFlow'](arg1, arg2, arg3);
+}
+
+export function GetBoardLeaders(arg1, arg2) {
+  return window['go']['main']['App']['GetBoardLeaders'](arg1, arg2);
+}
+
 export function GetConfig() {
   return window['go']['main']['App']['GetConfig']();
 }
 
 export function GetCurrentVersion() {
   return window['go']['main']['App']['GetCurrentVersion']();
+}
+
+export function GetF10Overview(arg1) {
+  return window['go']['main']['App']['GetF10Overview'](arg1);
+}
+
+export function GetF10Valuation(arg1) {
+  return window['go']['main']['App']['GetF10Valuation'](arg1);
 }
 
 export function GetHotTrend(arg1) {
@@ -114,8 +126,12 @@ export function GetMCPStatus() {
   return window['go']['main']['App']['GetMCPStatus']();
 }
 
-export function GetOpenClawStatus() {
-  return window['go']['main']['App']['GetOpenClawStatus']();
+export function GetMarketIndices() {
+  return window['go']['main']['App']['GetMarketIndices']();
+}
+
+export function GetMarketStatus() {
+  return window['go']['main']['App']['GetMarketStatus']();
 }
 
 export function GetOrCreateSession(arg1, arg2) {
@@ -130,6 +146,10 @@ export function GetSessionMessages(arg1) {
   return window['go']['main']['App']['GetSessionMessages'](arg1);
 }
 
+export function GetStockMoves(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetStockMoves'](arg1, arg2, arg3);
+}
+
 export function GetStockRealTimeData(arg1) {
   return window['go']['main']['App']['GetStockRealTimeData'](arg1);
 }
@@ -140,10 +160,6 @@ export function GetStrategies() {
 
 export function GetTelegraphList() {
   return window['go']['main']['App']['GetTelegraphList']();
-}
-
-export function GetTradeDates(arg1) {
-  return window['go']['main']['App']['GetTradeDates'](arg1);
 }
 
 export function GetTradingSchedule() {
@@ -158,10 +174,6 @@ export function Greet(arg1) {
   return window['go']['main']['App']['Greet'](arg1);
 }
 
-export function NotifyFrontendReady() {
-  return window['go']['main']['App']['NotifyFrontendReady']();
-}
-
 export function OpenURL(arg1) {
   return window['go']['main']['App']['OpenURL'](arg1);
 }
@@ -172,14 +184,6 @@ export function RemoveFromWatchlist(arg1) {
 
 export function RestartApp() {
   return window['go']['main']['App']['RestartApp']();
-}
-
-export function RetryAgent(arg1, arg2, arg3) {
-  return window['go']['main']['App']['RetryAgent'](arg1, arg2, arg3);
-}
-
-export function RetryAgentAndContinue(arg1) {
-  return window['go']['main']['App']['RetryAgentAndContinue'](arg1);
 }
 
 export function SearchStocks(arg1) {

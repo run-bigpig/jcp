@@ -9,7 +9,12 @@ import (
 
 // GetOrderBookInput 盘口数据输入参数
 type GetOrderBookInput struct {
-	Code string `json:"code" jsonschema:"股票代码，如 sh600519"`
+	Code         string `json:"code,omitempty" jsonschema:"股票代码，如 sh600519"`
+	Symbol       string `json:"symbol,omitempty" jsonschema:"兼容字段：股票代码"`
+	StockCode    string `json:"stockCode,omitempty" jsonschema:"兼容字段：股票代码"`
+	Ticker       string `json:"ticker,omitempty" jsonschema:"兼容字段：股票代码"`
+	SecurityCode string `json:"securityCode,omitempty" jsonschema:"兼容字段：股票代码"`
+	SecuCode     string `json:"secuCode,omitempty" jsonschema:"兼容字段：股票代码"`
 }
 
 // GetOrderBookOutput 盘口数据输出
@@ -20,14 +25,23 @@ type GetOrderBookOutput struct {
 // createOrderBookTool 创建盘口数据工具
 func (r *Registry) createOrderBookTool() (tool.Tool, error) {
 	handler := func(ctx tool.Context, input GetOrderBookInput) (GetOrderBookOutput, error) {
-		fmt.Printf("[Tool:get_orderbook] 调用开始, code=%s\n", input.Code)
+		code := resolveStockCodeFromCandidates(
+			ctx,
+			input.Code,
+			input.Symbol,
+			input.StockCode,
+			input.Ticker,
+			input.SecurityCode,
+			input.SecuCode,
+		)
+		fmt.Printf("[Tool:get_orderbook] 调用开始, rawCode=%s, resolvedCode=%s\n", input.Code, code)
 
-		if input.Code == "" {
+		if code == "" {
 			fmt.Println("[Tool:get_orderbook] 错误: 未提供股票代码")
 			return GetOrderBookOutput{Data: "请提供股票代码"}, nil
 		}
 
-		ob, err := r.marketService.GetRealOrderBook(input.Code)
+		ob, err := r.marketService.GetRealOrderBook(code)
 		if err != nil {
 			fmt.Printf("[Tool:get_orderbook] 错误: %v\n", err)
 			return GetOrderBookOutput{}, err

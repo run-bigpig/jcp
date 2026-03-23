@@ -48,7 +48,6 @@ func (r *Registry) createLongHuBangTool() (tool.Tool, error) {
 
 		var result string
 		for i, item := range listResult.Items {
-			// 格式化金额为万元
 			netBuyWan := item.NetBuyAmt / 10000
 			buyWan := item.BuyAmt / 10000
 			sellWan := item.SellAmt / 10000
@@ -108,7 +107,6 @@ func (r *Registry) createLongHuBangDetailTool() (tool.Tool, error) {
 		var result string
 		result += fmt.Sprintf("=== %s 龙虎榜营业部明细 ===\n\n", input.Code)
 
-		// 分别输出买入和卖出
 		result += "【买入前五营业部】\n"
 		buyCount := 0
 		for _, d := range details {

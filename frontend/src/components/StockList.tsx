@@ -3,8 +3,6 @@ import { Stock, MarketIndex } from '../types';
 import { searchStocks, StockSearchResult } from '../services/stockService';
 import { TrendingUp, TrendingDown, Search, X } from 'lucide-react';
 import { MarketIndices } from './MarketIndices';
-import { useTheme } from '../contexts/ThemeContext';
-import { useCandleColor } from '../contexts/CandleColorContext';
 
 interface StockListProps {
   stocks: Stock[]; // The current watchlist
@@ -13,6 +11,8 @@ interface StockListProps {
   onAddStock: (stock: Stock) => void;
   onRemoveStock?: (symbol: string) => void;
   marketIndices?: MarketIndex[];
+  selectedIndexCode?: string;
+  onSelectIndex?: (index: MarketIndex) => void;
 }
 
 export const StockList: React.FC<StockListProps> = ({
@@ -21,10 +21,10 @@ export const StockList: React.FC<StockListProps> = ({
   onSelect,
   onAddStock,
   onRemoveStock,
-  marketIndices
+  marketIndices,
+  selectedIndexCode,
+  onSelectIndex
 }) => {
-  const { colors } = useTheme();
-  const cc = useCandleColor();
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResults, setSearchResults] = useState<StockSearchResult[]>([]);
   const [showDropdown, setShowDropdown] = useState(false);
@@ -96,22 +96,26 @@ export const StockList: React.FC<StockListProps> = ({
   };
 
   return (
-    <div className="flex flex-col h-full relative">
-      <div className="p-4 border-b fin-divider-soft">
+    <div className="flex flex-col h-full fin-panel border-r fin-divider w-full relative">
+      <div className="p-4 fin-panel-strong border-b fin-divider">
         {/* 大盘指数 */}
-        <div className="mb-4 pb-3 border-b fin-divider-soft flex justify-center">
-          <MarketIndices indices={marketIndices || []} />
+        <div className="mb-4 pb-3 border-b fin-divider flex justify-center">
+          <MarketIndices
+            indices={marketIndices || []}
+            selectedCode={selectedIndexCode}
+            onSelect={onSelectIndex}
+          />
         </div>
         <div ref={searchRef} className="relative z-50">
           <div className="relative">
-            <Search className={`absolute left-3 top-2.5 h-4 w-4 ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`} />
+            <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
             <input
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               onFocus={() => searchResults.length > 0 && setShowDropdown(true)}
               placeholder="搜索股票代码或名称..."
-              className={`w-full fin-input rounded-lg pl-9 pr-4 py-2 text-sm ${colors.isDark ? 'placeholder-slate-500' : 'placeholder-slate-400'}`}
+              className="w-full fin-input rounded-lg pl-9 pr-4 py-2 text-sm placeholder-slate-500"
             />
             {isSearching && (
               <div className="absolute right-3 top-2.5 h-4 w-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
@@ -120,22 +124,22 @@ export const StockList: React.FC<StockListProps> = ({
 
           {/* 搜索下拉结果 */}
           {showDropdown && (
-            <div className={`absolute top-full left-0 right-0 mt-1 max-h-64 overflow-y-auto rounded-lg shadow-xl text-left ${colors.isDark ? 'bg-slate-800 border border-slate-600' : 'bg-white border border-slate-300'}`}>
+            <div className="absolute top-full left-0 right-0 mt-1 max-h-64 overflow-y-auto bg-slate-800 border border-slate-600 rounded-lg shadow-xl">
               {searchResults.map((result) => (
                 <div
                   key={result.symbol}
                   onClick={() => handleSelectResult(result)}
-                  className={`px-3 py-2 cursor-pointer border-b last:border-b-0 ${colors.isDark ? 'hover:bg-slate-700 border-slate-700' : 'hover:bg-slate-100 border-slate-200'}`}
+                  className="px-3 py-2 hover:bg-slate-700 cursor-pointer border-b border-slate-700 last:border-b-0"
                 >
                   <div className="flex justify-between items-center">
                     <div>
-                      <span className={colors.isDark ? 'text-slate-200' : 'text-slate-700'}>{result.name}</span>
+                      <span className="text-slate-200">{result.name}</span>
                       <span className="ml-2 font-mono text-accent-2 text-sm">{result.symbol}</span>
                     </div>
-                    <span className={`text-xs ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>{result.market}</span>
+                    <span className="text-xs text-slate-500">{result.market}</span>
                   </div>
                   {result.industry && (
-                    <div className={`text-xs mt-0.5 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>{result.industry}</div>
+                    <div className="text-xs text-slate-500 mt-0.5">{result.industry}</div>
                   )}
                 </div>
               ))}
@@ -143,7 +147,7 @@ export const StockList: React.FC<StockListProps> = ({
           )}
         </div>
       </div>
-
+      
       <div className="flex-1 overflow-y-auto fin-scrollbar">
         {stocks.map((stock) => {
           const isSelected = stock.symbol === selectedSymbol;
@@ -153,40 +157,42 @@ export const StockList: React.FC<StockListProps> = ({
             <div
               key={stock.symbol}
               onClick={() => onSelect(stock.symbol)}
-              className={`group p-4 border-b fin-divider-soft cursor-pointer transition-colors ${colors.isDark ? 'hover:bg-slate-800/40' : 'hover:bg-slate-100/60'} ${isSelected ? (colors.isDark ? 'bg-slate-800/40' : 'bg-slate-100/60') + ' border-l-4 border-l-accent' : 'border-l-4 border-l-transparent'}`}
+              className={`group px-3 py-2.5 border-b fin-divider cursor-pointer transition-colors hover:bg-slate-800/60 ${isSelected ? 'bg-slate-800/60 border-l-4 border-l-accent' : 'border-l-4 border-l-transparent'}`}
             >
-              <div className="flex justify-between items-start mb-1">
+              <div className="flex justify-between items-start mb-0.5">
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className={`font-bold ${colors.isDark ? 'text-slate-100' : 'text-slate-800'}`}>{stock.name}</span>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="font-bold text-slate-100 truncate">{stock.name}</span>
+                    <span className="text-[10px] font-mono text-slate-400 fin-chip px-1 py-0.5 rounded shrink-0">
+                      {stock.symbol}
+                    </span>
                     {onRemoveStock && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           onRemoveStock(stock.symbol);
                         }}
-                        className={`opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-red-500/20 hover:text-red-400 transition-all ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}
+                        className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-red-500/20 text-slate-500 hover:text-red-400 transition-all"
                       >
                         <X size={14} />
                       </button>
                     )}
                   </div>
-                  <div className={`text-xs font-mono truncate text-left ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>{stock.symbol}</div>
                 </div>
                 <div className="text-right">
-                  <div className={`font-mono ${cc.getColorClass(isPositive)}`}>
+                  <div className={`font-mono ${isPositive ? 'text-red-500' : 'text-green-500'}`}>
                     {stock.price.toFixed(2)}
                   </div>
-                  <div className={`text-xs font-mono flex items-center justify-end ${cc.getColorClass(isPositive)}`}>
+                  <div className={`text-xs font-mono flex items-center justify-end ${isPositive ? 'text-red-500' : 'text-green-500'}`}>
                     {isPositive ? <TrendingUp size={12} className="mr-1"/> : <TrendingDown size={12} className="mr-1"/>}
                     {isPositive ? '+' : ''}{stock.changePercent.toFixed(2)}%
                   </div>
                 </div>
               </div>
-              <div className={`flex justify-between items-center text-xs mt-2 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+              <div className="flex justify-between items-center text-[11px] text-slate-500 mt-1">
                 <span>量: {formatVolume(stock.volume)}</span>
                 {stock.sector && (
-                  <span className={`fin-chip px-1.5 py-0.5 rounded ${colors.isDark ? 'text-slate-300' : 'text-slate-600'}`}>{stock.sector}</span>
+                  <span className="fin-chip px-1 py-0.5 rounded text-[10px] text-slate-300">{stock.sector}</span>
                 )}
               </div>
             </div>

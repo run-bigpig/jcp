@@ -1,20 +1,19 @@
 import { useEffect, useCallback, useRef } from 'react';
 import { EventsOn, EventsOff, EventsEmit } from '@wailsjs/runtime/runtime';
-import { NotifyFrontendReady } from '../../wailsjs/go/main/App';
-import { Stock, OrderBook, Telegraph, MarketIndex, KLineData } from '../types';
+import { Stock, OrderBook, Telegraph, MarketIndex, MarketStatus, KLineData } from '../types';
 
 // K线推送数据结构
 interface KLineUpdateData {
   code: string;
   period: string;
   data: KLineData[];
-  incremental?: boolean; // 是否增量推送
 }
 
 // 事件名称常量，与后端保持一致
 const EVENT_STOCK_UPDATE = 'market:stock:update';
 const EVENT_ORDERBOOK_UPDATE = 'market:orderbook:update';
 const EVENT_TELEGRAPH_UPDATE = 'market:telegraph:update';
+const EVENT_MARKET_STATUS_UPDATE = 'market:status:update';
 const EVENT_MARKET_INDICES_UPDATE = 'market:indices:update';
 const EVENT_MARKET_SUBSCRIBE = 'market:subscribe';
 const EVENT_ORDERBOOK_SUBSCRIBE = 'market:orderbook:subscribe';
@@ -25,6 +24,7 @@ interface UseMarketEventsOptions {
   onStockUpdate?: (stocks: Stock[]) => void;
   onOrderBookUpdate?: (orderBook: OrderBook) => void;
   onTelegraphUpdate?: (telegraph: Telegraph) => void;
+  onMarketStatusUpdate?: (status: MarketStatus) => void;
   onMarketIndicesUpdate?: (indices: MarketIndex[]) => void;
   onKLineUpdate?: (data: KLineUpdateData) => void;
 }
@@ -34,12 +34,13 @@ interface UseMarketEventsOptions {
  * 监听后端推送的实时市场数据
  */
 export function useMarketEvents(options: UseMarketEventsOptions) {
-  const { onStockUpdate, onOrderBookUpdate, onTelegraphUpdate, onMarketIndicesUpdate, onKLineUpdate } = options;
+  const { onStockUpdate, onOrderBookUpdate, onTelegraphUpdate, onMarketStatusUpdate, onMarketIndicesUpdate, onKLineUpdate } = options;
 
   // 使用 ref 保存回调，避免重复注册
   const stockCallbackRef = useRef(onStockUpdate);
   const orderBookCallbackRef = useRef(onOrderBookUpdate);
   const telegraphCallbackRef = useRef(onTelegraphUpdate);
+  const marketStatusCallbackRef = useRef(onMarketStatusUpdate);
   const marketIndicesCallbackRef = useRef(onMarketIndicesUpdate);
   const klineCallbackRef = useRef(onKLineUpdate);
 
@@ -48,9 +49,10 @@ export function useMarketEvents(options: UseMarketEventsOptions) {
     stockCallbackRef.current = onStockUpdate;
     orderBookCallbackRef.current = onOrderBookUpdate;
     telegraphCallbackRef.current = onTelegraphUpdate;
+    marketStatusCallbackRef.current = onMarketStatusUpdate;
     marketIndicesCallbackRef.current = onMarketIndicesUpdate;
     klineCallbackRef.current = onKLineUpdate;
-  }, [onStockUpdate, onOrderBookUpdate, onTelegraphUpdate, onMarketIndicesUpdate, onKLineUpdate]);
+  }, [onStockUpdate, onOrderBookUpdate, onTelegraphUpdate, onMarketStatusUpdate, onMarketIndicesUpdate, onKLineUpdate]);
 
   // 注册事件监听
   useEffect(() => {
@@ -69,6 +71,11 @@ export function useMarketEvents(options: UseMarketEventsOptions) {
       telegraphCallbackRef.current?.(telegraph);
     });
 
+    // 监听市场状态更新
+    EventsOn(EVENT_MARKET_STATUS_UPDATE, (status: MarketStatus) => {
+      marketStatusCallbackRef.current?.(status);
+    });
+
     // 监听大盘指数更新
     EventsOn(EVENT_MARKET_INDICES_UPDATE, (indices: MarketIndex[]) => {
       marketIndicesCallbackRef.current?.(indices);
@@ -79,25 +86,12 @@ export function useMarketEvents(options: UseMarketEventsOptions) {
       klineCallbackRef.current?.(data);
     });
 
-    // 通知后端前端已准备好，循环调用直到成功
-    const notifyReady = async () => {
-      let success = false;
-      while (!success) {
-        try {
-          await NotifyFrontendReady();
-          success = true;
-        } catch {
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
-      }
-    };
-    notifyReady();
-
     // 清理函数
     return () => {
       EventsOff(EVENT_STOCK_UPDATE);
       EventsOff(EVENT_ORDERBOOK_UPDATE);
       EventsOff(EVENT_TELEGRAPH_UPDATE);
+      EventsOff(EVENT_MARKET_STATUS_UPDATE);
       EventsOff(EVENT_MARKET_INDICES_UPDATE);
       EventsOff(EVENT_KLINE_UPDATE);
     };

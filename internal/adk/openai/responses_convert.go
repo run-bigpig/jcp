@@ -3,13 +3,14 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"google.golang.org/adk/model"
 	"google.golang.org/genai"
 )
 
 // toResponsesRequest 将 ADK 请求转换为 Responses API 请求
-func toResponsesRequest(req *model.LLMRequest, modelName string, noSystemRole bool) (CreateResponseRequest, error) {
+func toResponsesRequest(req *model.LLMRequest, modelName string) (CreateResponseRequest, error) {
 	// 转换 input 消息
 	inputItems, err := toResponsesInputItems(req.Contents)
 	if err != nil {
@@ -25,33 +26,9 @@ func toResponsesRequest(req *model.LLMRequest, modelName string, noSystemRole bo
 		return apiReq, nil
 	}
 
-	// 处理系统指令
+	// 提取系统指令到顶层 instructions 字段
 	if req.Config.SystemInstruction != nil {
-		systemText := extractTextFromContent(req.Config.SystemInstruction)
-		if noSystemRole {
-			// 不支持 instructions 字段，将系统指令注入到第一条 user input 前面
-			injected := false
-			for i, item := range inputItems {
-				if item.Role == "user" {
-					if s, ok := item.Content.(string); ok {
-						inputItems[i].Content = systemText + "\n\n" + s
-					} else {
-						inputItems[i].Content = systemText
-					}
-					injected = true
-					break
-				}
-			}
-			if !injected {
-				inputItems = append([]ResponsesInputItem{{
-					Role:    "user",
-					Content: systemText,
-				}}, inputItems...)
-			}
-			apiReq.Input = inputItems
-		} else {
-			apiReq.Instructions = systemText
-		}
+		apiReq.Instructions = extractTextFromContent(req.Config.SystemInstruction)
 	}
 
 	// 处理 thinking/reasoning 配置
@@ -74,14 +51,14 @@ func toResponsesRequest(req *model.LLMRequest, modelName string, noSystemRole bo
 	}
 
 	// 应用生成参数
-	if req.Config.Temperature != nil {
+	if req.Config.Temperature != nil && !shouldSkipSamplingParams(modelName) {
 		t := float32(*req.Config.Temperature)
 		apiReq.Temperature = &t
 	}
 	if req.Config.MaxOutputTokens > 0 {
 		apiReq.MaxOutputTokens = int(req.Config.MaxOutputTokens)
 	}
-	if req.Config.TopP != nil {
+	if req.Config.TopP != nil && !shouldSkipSamplingParams(modelName) {
 		p := float32(*req.Config.TopP)
 		apiReq.TopP = &p
 	}
@@ -89,8 +66,21 @@ func toResponsesRequest(req *model.LLMRequest, modelName string, noSystemRole bo
 		apiReq.Stop = req.Config.StopSequences
 	}
 
+	// 推理模型限制：强制采样参数为 1
+	if isReasoningModel(modelName) {
+		one := float32(1)
+		if apiReq.Temperature == nil || *apiReq.Temperature != 1 {
+			apiReq.Temperature = &one
+		}
+		if apiReq.TopP == nil || *apiReq.TopP != 1 {
+			apiReq.TopP = &one
+		}
+	}
+
 	return apiReq, nil
 }
+
+// shouldSkipSamplingParams defined in convert.go
 
 // toResponsesInputItems 将 genai.Content 列表转换为 Responses API input
 func toResponsesInputItems(contents []*genai.Content) ([]ResponsesInputItem, error) {
@@ -142,9 +132,10 @@ func toResponsesInputItem(content *genai.Content) ([]ResponsesInputItem, error) 
 			if err != nil {
 				return nil, fmt.Errorf("序列化函数参数失败: %w", err)
 			}
+			// Responses API 对 function_call 的 id 有前缀约束（通常应为 "fc_*"）。
+			// 这里不主动传 id，避免将上游返回的 "call_*" 作为 id 传回导致 400。
 			toolCallItems = append(toolCallItems, ResponsesInputItem{
 				Type:      "function_call",
-				ID:        part.FunctionCall.ID,
 				CallID:    part.FunctionCall.ID,
 				Name:      part.FunctionCall.Name,
 				Arguments: string(argsJSON),
@@ -193,6 +184,7 @@ func convertResponsesTools(genaiTools []*genai.Tool) []ResponsesTool {
 			if params == nil {
 				params = funcDecl.Parameters
 			}
+			params = normalizeResponsesToolParams(params)
 			tools = append(tools, ResponsesTool{
 				Type:        "function",
 				Name:        funcDecl.Name,
@@ -202,6 +194,26 @@ func convertResponsesTools(genaiTools []*genai.Tool) []ResponsesTool {
 		}
 	}
 	return tools
+}
+
+func normalizeResponsesToolParams(params any) any {
+	schema, ok := params.(map[string]any)
+	if !ok || schema == nil {
+		return map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		}
+	}
+
+	if _, ok := schema["type"]; !ok {
+		schema["type"] = "object"
+	}
+	if t, ok := schema["type"].(string); ok && t == "object" {
+		if _, ok := schema["properties"]; !ok {
+			schema["properties"] = map[string]any{}
+		}
+	}
+	return schema
 }
 
 // convertResponsesResponse 将 Responses API 响应转换为 ADK LLMResponse
@@ -215,28 +227,20 @@ func convertResponsesResponse(resp *CreateResponseResponse) (*model.LLMResponse,
 		Parts: []*genai.Part{},
 	}
 
-	for _, item := range resp.Output {
+	for i, item := range resp.Output {
 		switch item.Type {
 		case "message":
 			for _, part := range item.Content {
 				switch part.Type {
-				case "output_text":
-					// 解析第三方特殊工具调用标记
-					vendorCalls, cleanedText := parseVendorToolCalls(part.Text)
-					for _, seg := range splitThinkTaggedText(cleanedText) {
-						content.Parts = append(content.Parts, &genai.Part{
-							Text:    seg.Text,
-							Thought: seg.Thought,
-						})
+				case "output_text", "text":
+					content.Parts = append(content.Parts, &genai.Part{Text: part.Text})
+				case "refusal":
+					refusalText := strings.TrimSpace(part.Refusal)
+					if refusalText == "" {
+						refusalText = strings.TrimSpace(part.Text)
 					}
-					for i, vc := range vendorCalls {
-						content.Parts = append(content.Parts, &genai.Part{
-							FunctionCall: &genai.FunctionCall{
-								ID:   fmt.Sprintf("vendor_call_%d", i),
-								Name: vc.Name,
-								Args: vc.Args,
-							},
-						})
+					if refusalText != "" {
+						content.Parts = append(content.Parts, &genai.Part{Text: "模型拒答：" + refusalText})
 					}
 				case "reasoning":
 					content.Parts = append(content.Parts, &genai.Part{
@@ -246,9 +250,10 @@ func convertResponsesResponse(resp *CreateResponseResponse) (*model.LLMResponse,
 				}
 			}
 		case "function_call":
+			callID := ensureFunctionCallID(item.CallID, item.Name, i)
 			content.Parts = append(content.Parts, &genai.Part{
 				FunctionCall: &genai.FunctionCall{
-					ID:   item.CallID,
+					ID:   callID,
 					Name: item.Name,
 					Args: parseJSONArgs(item.Arguments),
 				},

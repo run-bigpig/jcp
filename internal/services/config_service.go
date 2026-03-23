@@ -59,89 +59,16 @@ func (cs *ConfigService) loadConfig() error {
 	if err := json.Unmarshal(data, &config); err != nil {
 		return err
 	}
-
-	// 用于识别字段是否在 JSON 中显式存在（避免把用户明确设置的 false 当成缺失字段）
-	var raw struct {
-		Indicators struct {
-			MA struct {
-				Enabled *bool `json:"enabled"`
-			} `json:"ma"`
-			EMA struct {
-				Enabled *bool `json:"enabled"`
-			} `json:"ema"`
-			BOLL struct {
-				Enabled *bool `json:"enabled"`
-			} `json:"boll"`
-			MACD struct {
-				Enabled *bool `json:"enabled"`
-			} `json:"macd"`
-			RSI struct {
-				Enabled *bool `json:"enabled"`
-			} `json:"rsi"`
-			KDJ struct {
-				Enabled *bool `json:"enabled"`
-			} `json:"kdj"`
-		} `json:"indicators"`
+	raw := string(data)
+	// 兼容旧配置：缺少该字段时默认开启，便于排障观察 Agent 请求/响应链路。
+	if !strings.Contains(raw, "\"verboseAgentIO\"") {
+		config.VerboseAgentIO = true
 	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
+	// 兼容旧配置：缺少该字段时默认开启，保持历史行为（二轮复议默认开启）。
+	if !strings.Contains(raw, "\"enableSecondReview\"") {
+		config.EnableSecondReview = true
 	}
-
-	// 旧配置文件可能缺少 indicators 字段，Go 零值（nil/0/0.0）会导致前端异常
-	// 用默认值补全所有未设置的字段
-	d := cs.defaultConfig().Indicators
-	ind := &config.Indicators
-	if raw.Indicators.MA.Enabled == nil {
-		ind.MA.Enabled = d.MA.Enabled
-	}
-	if ind.MA.Periods == nil {
-		ind.MA.Periods = d.MA.Periods
-	}
-	if raw.Indicators.EMA.Enabled == nil {
-		ind.EMA.Enabled = d.EMA.Enabled
-	}
-	if ind.EMA.Periods == nil {
-		ind.EMA.Periods = d.EMA.Periods
-	}
-	if raw.Indicators.BOLL.Enabled == nil {
-		ind.BOLL.Enabled = d.BOLL.Enabled
-	}
-	if ind.BOLL.Period == 0 {
-		ind.BOLL.Period = d.BOLL.Period
-	}
-	if ind.BOLL.Multiplier == 0 {
-		ind.BOLL.Multiplier = d.BOLL.Multiplier
-	}
-	if raw.Indicators.MACD.Enabled == nil {
-		ind.MACD.Enabled = d.MACD.Enabled
-	}
-	if ind.MACD.Fast == 0 {
-		ind.MACD.Fast = d.MACD.Fast
-	}
-	if ind.MACD.Slow == 0 {
-		ind.MACD.Slow = d.MACD.Slow
-	}
-	if ind.MACD.Signal == 0 {
-		ind.MACD.Signal = d.MACD.Signal
-	}
-	if raw.Indicators.RSI.Enabled == nil {
-		ind.RSI.Enabled = d.RSI.Enabled
-	}
-	if ind.RSI.Period == 0 {
-		ind.RSI.Period = d.RSI.Period
-	}
-	if raw.Indicators.KDJ.Enabled == nil {
-		ind.KDJ.Enabled = d.KDJ.Enabled
-	}
-	if ind.KDJ.Period == 0 {
-		ind.KDJ.Period = d.KDJ.Period
-	}
-	if ind.KDJ.K == 0 {
-		ind.KDJ.K = d.KDJ.K
-	}
-	if ind.KDJ.D == 0 {
-		ind.KDJ.D = d.KDJ.D
-	}
+	cs.normalizeConfig(&config)
 	cs.config = &config
 	return nil
 }
@@ -149,24 +76,22 @@ func (cs *ConfigService) loadConfig() error {
 // defaultConfig 默认配置
 func (cs *ConfigService) defaultConfig() *models.AppConfig {
 	return &models.AppConfig{
-		Theme:           "military",
-		CandleColorMode: "red-up",
-		AIConfigs:       []models.AIConfig{},
-		DefaultAIID:     "",
+		Theme:               "military",
+		AIConfigs:           []models.AIConfig{},
+		DefaultAIID:         "",
+		AIRetryCount:        3,
+		VerboseAgentIO:      true,
+		AgentSelectionStyle: models.AgentSelectionBalanced,
+		EnableSecondReview:  true,
+		Proxy: models.ProxyConfig{
+			Mode: models.ProxyModeNone,
+		},
 		Memory: models.MemoryConfig{
 			Enabled:           true,
 			MaxRecentRounds:   3,
 			MaxKeyFacts:       20,
 			MaxSummaryLength:  300,
 			CompressThreshold: 5,
-		},
-		Indicators: models.IndicatorConfig{
-			MA:   models.MAConfig{Enabled: true, Periods: []int{5, 10, 20}},
-			EMA:  models.EMAConfig{Enabled: false, Periods: []int{12, 26}},
-			BOLL: models.BOLLConfig{Enabled: false, Period: 20, Multiplier: 2.0},
-			MACD: models.MACDConfig{Enabled: true, Fast: 12, Slow: 26, Signal: 9},
-			RSI:  models.RSIConfig{Enabled: false, Period: 14},
-			KDJ:  models.KDJConfig{Enabled: false, Period: 9, K: 3, D: 3},
 		},
 	}
 }
@@ -191,8 +116,37 @@ func (cs *ConfigService) GetConfig() *models.AppConfig {
 func (cs *ConfigService) UpdateConfig(config *models.AppConfig) error {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
+	cs.normalizeConfig(config)
 	cs.config = config
 	return cs.saveConfigLocked()
+}
+
+func (cs *ConfigService) normalizeConfig(config *models.AppConfig) {
+	if config == nil {
+		return
+	}
+	if config.AIRetryCount < 1 {
+		config.AIRetryCount = 3
+	}
+	if config.AIRetryCount > 5 {
+		config.AIRetryCount = 5
+	}
+	switch config.AgentSelectionStyle {
+	case models.AgentSelectionBalanced, models.AgentSelectionConservative, models.AgentSelectionAggressive:
+	default:
+		config.AgentSelectionStyle = models.AgentSelectionBalanced
+	}
+	for i := range config.AIConfigs {
+		if config.AIConfigs[i].Timeout <= 0 {
+			config.AIConfigs[i].Timeout = 60
+		}
+		if config.AIConfigs[i].Timeout < 5 {
+			config.AIConfigs[i].Timeout = 5
+		}
+		if config.AIConfigs[i].Timeout > 3600 {
+			config.AIConfigs[i].Timeout = 3600
+		}
+	}
 }
 
 // loadWatchlist 加载自选股列表

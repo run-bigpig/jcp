@@ -1,4 +1,4 @@
-import { GetOrCreateSession, GetSessionMessages, ClearSessionMessages, SendMeetingMessage, UpdateStockPosition, RetryAgent, RetryAgentAndContinue, CancelInterruptedMeeting } from '../../wailsjs/go/main/App';
+import { GetOrCreateSession, GetSessionMessages, ClearSessionMessages, SendMeetingMessage, UpdateStockPosition } from '../../wailsjs/go/main/App';
 import type { StockPosition } from '../types';
 
 export interface StockSession {
@@ -22,8 +22,6 @@ export interface ChatMessage {
   mentions?: string[];
   round?: number;
   msgType?: string;
-  error?: string;  // 失败时的错误信息
-  meetingMode?: string; // smart=串行, direct=独立
 }
 
 // 会议室消息请求
@@ -58,19 +56,4 @@ export const sendMeetingMessage = async (req: MeetingMessageRequest): Promise<Ch
 // 更新股票持仓信息
 export const updateStockPosition = async (stockCode: string, shares: number, costPrice: number): Promise<string> => {
   return await UpdateStockPosition(stockCode, shares, costPrice);
-};
-
-// 重试单个失败的专家
-export const retryAgent = async (stockCode: string, agentId: string, query: string): Promise<ChatMessage> => {
-  return await RetryAgent(stockCode, agentId, query);
-};
-
-// 重试失败专家并继续执行剩余专家
-export const retryAgentAndContinue = async (stockCode: string): Promise<ChatMessage[]> => {
-  return await RetryAgentAndContinue(stockCode);
-};
-
-// 取消中断的会议（用户放弃重试）
-export const cancelInterruptedMeeting = async (stockCode: string): Promise<boolean> => {
-  return await CancelInterruptedMeeting(stockCode);
 };

@@ -1,25 +1,26 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { StockList } from './components/StockList';
-import { StockChartLW } from './components/StockChartLW';
+import { StockChart } from './components/StockChart';
 import { OrderBook as OrderBookComponent } from './components/OrderBook';
+import { F10Panel } from './components/F10Panel';
 import { AgentRoom } from './components/AgentRoom';
 import { SettingsDialog } from './components/SettingsDialog';
 import { PositionDialog } from './components/PositionDialog';
 import { HotTrendDialog } from './components/HotTrendDialog';
 import { LongHuBangDialog } from './components/LongHuBangDialog';
+import { MarketMovesDialog } from './components/MarketMovesDialog';
 import { WelcomePage } from './components/WelcomePage';
 import { ThemeSwitcher } from './components/ThemeSwitcher';
 import { useTheme } from './contexts/ThemeContext';
-import { useCandleColor } from './contexts/CandleColorContext';
 import { ResizeHandle } from './components/ResizeHandle';
 import { getWatchlist, addToWatchlist, removeFromWatchlist } from './services/watchlistService';
 import { getKLineData, getOrderBook } from './services/stockService';
+import { getF10Overview } from './services/f10Service';
 import { getOrCreateSession, StockSession, updateStockPosition } from './services/sessionService';
 import { getConfig, updateConfig } from './services/configService';
 import { useMarketEvents } from './hooks/useMarketEvents';
-import { useMarketStatus } from './hooks/useMarketStatus';
-import { Stock, KLineData, OrderBook, TimePeriod, Telegraph, MarketIndex } from './types';
-import { Radio, Settings, List, Minus, Square, X, Copy, Briefcase, TrendingUp, BarChart3 } from 'lucide-react';
+import { Stock, KLineData, OrderBook, TimePeriod, Telegraph, MarketIndex, MarketStatus, F10Overview } from './types';
+import { Radio, Settings, List, Minus, Square, X, Copy, Briefcase, TrendingUp, BarChart3, Activity } from 'lucide-react';
 import logo from './assets/images/logo.png';
 import { GetTelegraphList, OpenURL, WindowMinimize, WindowMaximize, WindowClose } from '../wailsjs/go/main/App';
 import { WindowIsMaximised, WindowSetSize, WindowGetSize } from '../wailsjs/runtime/runtime';
@@ -28,30 +29,38 @@ import { WindowIsMaximised, WindowSetSize, WindowGetSize } from '../wailsjs/runt
 const LAYOUT_DEFAULTS = {
   leftPanelWidth: 280,
   rightPanelWidth: 384,
-  bottomPanelHeight: 180,
+  bottomPanelHeight: 120,
 };
 const LAYOUT_MIN = {
   leftPanelWidth: 280,
   rightPanelWidth: 384,
-  bottomPanelHeight: 120,
+  bottomPanelHeight: 104,
 };
 const LAYOUT_MAX = {
   leftPanelWidth: 500,
   rightPanelWidth: 700,
-  bottomPanelHeight: 450,
+  bottomPanelHeight: 150,
+};
+const WINDOW_RESTORE_DEFAULT = {
+  width: 1366,
+  height: 768,
 };
 
-type KLineUpdateMode = 'full' | 'incremental' | 'refresh';
+const clampLayoutValue = (value: number | undefined, min: number, max: number, fallback: number) => {
+  if (typeof value !== 'number' || Number.isNaN(value) || value <= 0) return fallback;
+  return Math.max(min, Math.min(max, value));
+};
+
+const formatClock = (): string =>
+  new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
 const App: React.FC = () => {
   const { colors } = useTheme();
-  const cc = useCandleColor();
   const [watchlist, setWatchlist] = useState<Stock[]>([]);
   const [selectedSymbol, setSelectedSymbol] = useState<string>('');
   const [currentSession, setCurrentSession] = useState<StockSession | null>(null);
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('1m');
   const [kLineData, setKLineData] = useState<KLineData[]>([]);
-  const [kLineUpdateMode, setKLineUpdateMode] = useState<KLineUpdateMode>('full');
   const [orderBook, setOrderBook] = useState<OrderBook>({ bids: [], asks: [] });
   const [marketMessage, setMarketMessage] = useState<string>('市场数据加载中...');
   const [telegraphList, setTelegraphList] = useState<Telegraph[]>([]);
@@ -62,12 +71,17 @@ const App: React.FC = () => {
   const [showPosition, setShowPosition] = useState(false);
   const [showHotTrend, setShowHotTrend] = useState(false);
   const [showLongHuBang, setShowLongHuBang] = useState(false);
+  const [showMarketMoves, setShowMarketMoves] = useState(false);
+  const [showF10, setShowF10] = useState(false);
+  const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
   const [marketIndices, setMarketIndices] = useState<MarketIndex[]>([]);
   const [isMaximized, setIsMaximized] = useState(false);
-  const klineRequestIdRef = useRef(0);
-
-  // 使用纯前端市场状态判断
-  const { status: marketStatus } = useMarketStatus();
+  const [clock, setClock] = useState<string>(formatClock);
+  const [f10Overview, setF10Overview] = useState<F10Overview | null>(null);
+  const [f10Loading, setF10Loading] = useState(false);
+  const [f10Error, setF10Error] = useState<string>('');
+  const [pendingRemoveSymbol, setPendingRemoveSymbol] = useState<string>('');
+  const [isRemovingStock, setIsRemovingStock] = useState(false);
 
   // 布局状态
   const [leftPanelWidth, setLeftPanelWidth] = useState(LAYOUT_DEFAULTS.leftPanelWidth);
@@ -78,15 +92,70 @@ const App: React.FC = () => {
   const selectedStock = useMemo(() =>
     watchlist.find(s => s.symbol === selectedSymbol) || watchlist[0]
   , [selectedSymbol, watchlist]);
+  const pendingRemoveStock = useMemo(
+    () => watchlist.find(stock => stock.symbol === pendingRemoveSymbol) || null,
+    [watchlist, pendingRemoveSymbol],
+  );
+  const marketOverview = useMemo(() => {
+    if (!selectedStock) {
+      return { quote: [], deal: [], capital: [] } as const;
+    }
+
+    const valuation = f10Overview?.valuation;
+    const latestAvg = kLineData.length > 0 ? kLineData[kLineData.length - 1]?.avg : undefined;
+    const quoteAvgCandidate = selectedStock.volume > 0 && selectedStock.amount > 0
+      ? selectedStock.amount / selectedStock.volume
+      : undefined;
+    const isQuoteAvgPlausible = quoteAvgCandidate !== undefined
+      && quoteAvgCandidate > selectedStock.price * 0.2
+      && quoteAvgCandidate < selectedStock.price * 5;
+    const avgPrice = latestAvg
+      ?? (isQuoteAvgPlausible ? quoteAvgCandidate : undefined)
+      ?? selectedStock.price;
+    const amplitude = selectedStock.preClose > 0
+      ? ((selectedStock.high - selectedStock.low) / selectedStock.preClose) * 100
+      : undefined;
+    const changeColor = selectedStock.change >= 0 ? 'text-red-500' : 'text-green-500';
+
+    return {
+      quote: [
+        { label: '开', value: formatNumberOrDash(selectedStock.open), colorClass: getPriceColorClass(selectedStock.open, selectedStock.preClose) },
+        { label: '高', value: formatNumberOrDash(selectedStock.high), colorClass: getPriceColorClass(selectedStock.high, selectedStock.preClose) },
+        { label: '低', value: formatNumberOrDash(selectedStock.low), colorClass: getPriceColorClass(selectedStock.low, selectedStock.preClose) },
+        { label: '昨', value: formatNumberOrDash(selectedStock.preClose) },
+        { label: '振', value: formatPercentOrDash(amplitude) },
+      ],
+      deal: [
+        { label: '量', value: formatVolume(selectedStock.volume) },
+        { label: '额', value: formatAmount(selectedStock.amount) },
+        { label: 'PE(TTM)', value: formatNumberOrDash(valuation?.peTtm) },
+        { label: 'PB', value: formatNumberOrDash(valuation?.pb) },
+        { label: '换', value: formatPercentOrDash(valuation?.turnoverRate) },
+      ],
+      capital: [
+        { label: '总', value: formatCapValue(valuation?.totalMarketCap) },
+        { label: '流', value: formatCapValue(valuation?.floatMarketCap) },
+        { label: '均', value: formatNumberOrDash(avgPrice) },
+        { label: '涨', value: `${selectedStock.change >= 0 ? '+' : ''}${selectedStock.changePercent.toFixed(2)}%`, colorClass: changeColor },
+      ],
+    } as const;
+  }, [selectedStock, f10Overview, kLineData]);
 
   // 处理股票数据更新（来自后端推送）
   const handleStockUpdate = useCallback((stocks: Stock[]) => {
     if (!stocks || !Array.isArray(stocks)) return;
     setWatchlist(prev => {
-      // 更新已有股票的数据
+      // 实时推送里通常不包含行业等静态字段，需保留本地已有值
       return prev.map(stock => {
         const updated = stocks.find(s => s.symbol === stock.symbol);
-        return updated || stock;
+        if (!updated) return stock;
+        return {
+          ...stock,
+          ...updated,
+          name: updated.name || stock.name,
+          sector: updated.sector || stock.sector,
+          marketCap: updated.marketCap || stock.marketCap,
+        };
       });
     });
   }, []);
@@ -103,6 +172,13 @@ const App: React.FC = () => {
     }
   }, []);
 
+  // 处理市场状态更新（来自后端推送）
+  const handleMarketStatusUpdate = useCallback((status: MarketStatus) => {
+    if (status) {
+      setMarketStatus(status);
+    }
+  }, []);
+
   // 处理大盘指数更新（来自后端推送）
   const handleMarketIndicesUpdate = useCallback((indices: MarketIndex[]) => {
     if (indices) {
@@ -110,52 +186,28 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // 处理K线数据更新（来自后端推送，支持增量）
-  const handleKLineUpdate = useCallback((data: { code: string; period: string; data: KLineData[]; incremental?: boolean }) => {
-    if (!data || data.code !== selectedSymbol || data.period !== timePeriod) return;
-
-    if (data.incremental && data.data.length > 0) {
-      setKLineUpdateMode('incremental');
-      // 增量更新：合并最新K线
-      setKLineData(prev => {
-        if (prev.length === 0) return data.data;
-        const newBar = data.data[0];
-        const lastIdx = prev.length - 1;
-        // 同一时间戳则更新，否则追加
-        if (prev[lastIdx].time === newBar.time) {
-          const updated = [...prev];
-          updated[lastIdx] = newBar;
-          return updated;
-        }
-        return [...prev.slice(-239), newBar]; // 保持240根
-      });
-    } else {
-      // 后端定时推送：用 refresh 模式更新数据但保留用户缩放状态
-      if (Array.isArray(data.data) && data.data.length > 0) {
-        setKLineUpdateMode('refresh');
-        setKLineData(data.data);
-      }
+  // 处理K线数据更新（来自后端推送）
+  const handleKLineUpdate = useCallback((data: { code: string; period: string; data: KLineData[] }) => {
+    // 只更新当前选中股票和周期的K线数据
+    if (data && data.code === selectedSymbol && data.period === timePeriod) {
+      setKLineData(data.data);
     }
   }, [selectedSymbol, timePeriod]);
 
-  const syncWindowMaximizedState = useCallback(async () => {
+  const fetchF10Overview = useCallback(async (symbol: string) => {
+    if (!symbol) return;
+    setF10Loading(true);
+    setF10Error('');
     try {
-      const maximized = await WindowIsMaximised();
-      setIsMaximized(maximized);
-    } catch {
-      // ignore runtime query failures and keep current UI state
+      const overview = await getF10Overview(symbol);
+      setF10Overview(overview);
+    } catch (err) {
+      console.error('Failed to get F10 overview:', err);
+      setF10Error(err instanceof Error ? err.message : '获取F10数据失败');
+    } finally {
+      setF10Loading(false);
     }
   }, []);
-
-  const toggleWindowMaximize = useCallback(async () => {
-    try {
-      await WindowMaximize();
-      await syncWindowMaximizedState();
-    } catch {
-      // fallback to optimistic toggle when runtime query is unavailable
-      setIsMaximized(prev => !prev);
-    }
-  }, [syncWindowMaximizedState]);
 
   // 保存布局配置（防抖）
   const saveLayoutConfig = useCallback(async (
@@ -168,13 +220,20 @@ const App: React.FC = () => {
     saveTimeoutRef.current = setTimeout(async () => {
       try {
         const config = await getConfig();
-        const size = await WindowGetSize();
+        const isWindowMaximized = await WindowIsMaximised();
+        let windowWidth = config.layout?.windowWidth || WINDOW_RESTORE_DEFAULT.width;
+        let windowHeight = config.layout?.windowHeight || WINDOW_RESTORE_DEFAULT.height;
+        if (!isWindowMaximized) {
+          const size = await WindowGetSize();
+          windowWidth = Math.max(WINDOW_RESTORE_DEFAULT.width, winWidth ?? size.w);
+          windowHeight = Math.max(WINDOW_RESTORE_DEFAULT.height, winHeight ?? size.h);
+        }
         config.layout = {
           leftPanelWidth: left,
           rightPanelWidth: right,
           bottomPanelHeight: bottom,
-          windowWidth: winWidth ?? size.w,
-          windowHeight: winHeight ?? size.h,
+          windowWidth,
+          windowHeight,
         };
         await updateConfig(config);
       } catch (err) {
@@ -256,11 +315,26 @@ const App: React.FC = () => {
     setShowTelegraphList(false);
   };
 
+  const handleShowTrend = useCallback(() => {
+    setShowF10(false);
+  }, []);
+
+  const handleShowF10 = useCallback(() => {
+    setShowF10(true);
+    if (
+      selectedStock?.symbol &&
+      (!f10Overview || f10Overview.code !== selectedStock.symbol)
+    ) {
+      fetchF10Overview(selectedStock.symbol);
+    }
+  }, [selectedStock, f10Overview, fetchF10Overview]);
+
   // 使用市场事件 Hook
-  const { subscribeOrderBook, subscribeKLine } = useMarketEvents({
+  const { subscribe, subscribeOrderBook, subscribeKLine } = useMarketEvents({
     onStockUpdate: handleStockUpdate,
     onOrderBookUpdate: handleOrderBookUpdate,
     onTelegraphUpdate: handleTelegraphUpdate,
+    onMarketStatusUpdate: handleMarketStatusUpdate,
     onMarketIndicesUpdate: handleMarketIndicesUpdate,
     onKLineUpdate: handleKLineUpdate,
   });
@@ -272,8 +346,6 @@ const App: React.FC = () => {
       setWatchlist(prev => [...prev, newStock]);
       // 添加后自动选中新股票并加载数据
       setSelectedSymbol(newStock.symbol);
-      // 先清空 session，避免显示旧股票的消息
-      setCurrentSession(null);
       subscribeOrderBook(newStock.symbol);
       // 加载 Session 和盘口数据
       const [session, orderBookData] = await Promise.all([
@@ -286,15 +358,35 @@ const App: React.FC = () => {
   };
 
   // Handle Removing Stock
-  const handleRemoveStock = async (symbol: string) => {
-    await removeFromWatchlist(symbol);
-    setWatchlist(prev => prev.filter(s => s.symbol !== symbol));
-    // 如果删除的是当前选中的股票，切换到第一个
-    if (symbol === selectedSymbol) {
-      const remaining = watchlist.filter(s => s.symbol !== symbol);
-      if (remaining.length > 0) {
-        handleSelectStock(remaining[0].symbol);
+  const handleRemoveStock = (symbol: string) => {
+    setPendingRemoveSymbol(symbol);
+  };
+
+  const handleCancelRemoveStock = () => {
+    if (isRemovingStock) return;
+    setPendingRemoveSymbol('');
+  };
+
+  const handleConfirmRemoveStock = async () => {
+    if (!pendingRemoveSymbol || isRemovingStock) {
+      return;
+    }
+    setIsRemovingStock(true);
+    const symbol = pendingRemoveSymbol;
+
+    try {
+      await removeFromWatchlist(symbol);
+      setWatchlist(prev => prev.filter(s => s.symbol !== symbol));
+      setPendingRemoveSymbol('');
+      // 如果删除的是当前选中的股票，切换到第一个
+      if (symbol === selectedSymbol) {
+        const remaining = watchlist.filter(s => s.symbol !== symbol);
+        if (remaining.length > 0) {
+          handleSelectStock(remaining[0].symbol);
+        }
       }
+    } finally {
+      setIsRemovingStock(false);
     }
   };
 
@@ -315,6 +407,32 @@ const App: React.FC = () => {
     }
   };
 
+  // Handle Market Index Selection - ensure index can be clicked from left-top panel
+  const handleSelectIndex = async (index: MarketIndex) => {
+    const existing = watchlist.find(s => s.symbol === index.code);
+    if (existing) {
+      await handleSelectStock(index.code);
+      return;
+    }
+
+    const indexStock: Stock = {
+      symbol: index.code,
+      name: index.name,
+      price: index.price,
+      change: index.change,
+      changePercent: index.changePercent,
+      volume: index.volume,
+      amount: index.amount,
+      marketCap: '',
+      sector: '指数',
+      open: 0,
+      high: 0,
+      low: 0,
+      preClose: 0,
+    };
+    await handleAddStock(indexStock);
+  };
+
   // Load watchlist on mount
   useEffect(() => {
     const loadWatchlist = async () => {
@@ -322,12 +440,36 @@ const App: React.FC = () => {
         // 加载布局配置
         const config = await getConfig();
         if (config.layout) {
-          if (config.layout.leftPanelWidth > 0) setLeftPanelWidth(config.layout.leftPanelWidth);
-          if (config.layout.rightPanelWidth > 0) setRightPanelWidth(config.layout.rightPanelWidth);
-          if (config.layout.bottomPanelHeight > 0) setBottomPanelHeight(config.layout.bottomPanelHeight);
-          // 恢复窗口大小
-          if (config.layout.windowWidth > 0 && config.layout.windowHeight > 0) {
-            WindowSetSize(config.layout.windowWidth, config.layout.windowHeight);
+          setLeftPanelWidth(
+            clampLayoutValue(
+              config.layout.leftPanelWidth,
+              LAYOUT_MIN.leftPanelWidth,
+              LAYOUT_MAX.leftPanelWidth,
+              LAYOUT_DEFAULTS.leftPanelWidth,
+            ),
+          );
+          setRightPanelWidth(
+            clampLayoutValue(
+              config.layout.rightPanelWidth,
+              LAYOUT_MIN.rightPanelWidth,
+              LAYOUT_MAX.rightPanelWidth,
+              LAYOUT_DEFAULTS.rightPanelWidth,
+            ),
+          );
+          setBottomPanelHeight(
+            clampLayoutValue(
+              config.layout.bottomPanelHeight,
+              LAYOUT_MIN.bottomPanelHeight,
+              LAYOUT_MAX.bottomPanelHeight,
+              LAYOUT_DEFAULTS.bottomPanelHeight,
+            ),
+          );
+          // 恢复窗口大小：仅在非最大化状态下设置，避免破坏最大化/还原行为
+          const isWindowMaximized = await WindowIsMaximised();
+          if (!isWindowMaximized) {
+            const restoreWidth = Math.max(WINDOW_RESTORE_DEFAULT.width, config.layout.windowWidth || WINDOW_RESTORE_DEFAULT.width);
+            const restoreHeight = Math.max(WINDOW_RESTORE_DEFAULT.height, config.layout.windowHeight || WINDOW_RESTORE_DEFAULT.height);
+            await WindowSetSize(restoreWidth, restoreHeight);
           }
         }
 
@@ -359,46 +501,65 @@ const App: React.FC = () => {
   // Load K-line data when symbol or period changes
   useEffect(() => {
     if (!selectedSymbol) return;
-    const requestId = ++klineRequestIdRef.current;
-    // 切换时先切回 full 模式，等待全量数据到达
-    setKLineUpdateMode('full');
-    // 清空旧数据，避免切换期间出现“新股票 + 旧K线”错配
+    // 切换时先清空数据，避免闪烁
     setKLineData([]);
     // 订阅K线推送
     subscribeKLine(selectedSymbol, timePeriod);
-
     const loadKLineData = async () => {
-      // 与后端推送统一数据长度，降低周/月K空响应概率
-      const dataLen = timePeriod === '1m' ? 250 : 240;
-      const maxRetries = 2;
-      for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-        if (requestId !== klineRequestIdRef.current) return;
-        try {
-          const data = await getKLineData(selectedSymbol, timePeriod, dataLen);
-          if (requestId !== klineRequestIdRef.current) return;
-          if (Array.isArray(data) && data.length > 0) {
-            setKLineUpdateMode('full');
-            setKLineData(data);
-            return;
-          }
-          console.warn(`[kline] empty data for ${selectedSymbol} ${timePeriod}, attempt=${attempt + 1}`);
-        } catch (err) {
-          if (requestId !== klineRequestIdRef.current) return;
-          console.error(`[kline] load failed for ${selectedSymbol} ${timePeriod}, attempt=${attempt + 1}`, err);
-        }
-        if (attempt < maxRetries) {
-          await new Promise(resolve => setTimeout(resolve, 600));
-        }
-      }
+      // 分时图需要更多数据点（1分钟K线，一天约240根）
+      const dataLen = timePeriod === '1m' ? 250 : 60;
+      const data = await getKLineData(selectedSymbol, timePeriod, dataLen);
+      setKLineData(data);
     };
-
-    void loadKLineData();
+    loadKLineData();
   }, [selectedSymbol, timePeriod, subscribeKLine]);
 
   // 初始化窗口最大化状态
   useEffect(() => {
-    void syncWindowMaximizedState();
-  }, [syncWindowMaximizedState]);
+    const syncMaximizedState = () => {
+      WindowIsMaximised().then(setIsMaximized).catch(() => {});
+    };
+    syncMaximizedState();
+    window.addEventListener('resize', syncMaximizedState);
+    return () => {
+      window.removeEventListener('resize', syncMaximizedState);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (selectedSymbol) {
+      fetchF10Overview(selectedSymbol);
+    }
+  }, [selectedSymbol, fetchF10Overview]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setClock(formatClock());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!pendingRemoveSymbol) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !isRemovingStock) {
+        setPendingRemoveSymbol('');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [pendingRemoveSymbol, isRemovingStock]);
+
+  // 自选股代码变化时同步后端订阅，避免新增/删除后实时价格滞后
+  const watchlistSymbolKey = useMemo(
+    () => watchlist.map(stock => stock.symbol).filter(Boolean).join(','),
+    [watchlist],
+  );
+
+  useEffect(() => {
+    if (!watchlistSymbolKey) return;
+    subscribe(watchlistSymbolKey.split(','));
+  }, [watchlistSymbolKey, subscribe]);
 
   if (loading) return <div className="h-screen w-screen flex items-center justify-center fin-app text-white">加载中...</div>;
 
@@ -412,16 +573,7 @@ const App: React.FC = () => {
   return (
     <div className="flex flex-col h-screen text-slate-100 font-sans fin-app">
       {/* Top Navbar */}
-      <header
-        className="h-14 fin-panel border-b fin-divider flex items-center px-4 justify-between shrink-0 z-20"
-        style={{ '--wails-draggable': 'drag' } as React.CSSProperties}
-        onDoubleClick={(e) => {
-          // 排除 no-drag 区域的双击
-          const target = e.target as HTMLElement;
-          if (target.closest('[style*="no-drag"]') || target.closest('button') || target.closest('input')) return;
-          void toggleWindowMaximize();
-        }}
-      >
+      <header className="h-14 fin-panel border-b fin-divider flex items-center px-4 justify-between shrink-0 z-20" style={{ '--wails-draggable': 'drag' } as React.CSSProperties}>
         <div className="flex items-center gap-2" style={{ '--wails-draggable': 'no-drag' } as React.CSSProperties}>
           <img src={logo} alt="logo" className="h-8 w-8 rounded-lg" />
           <span className={`font-bold text-lg tracking-tight ${colors.isDark ? 'text-white' : 'text-slate-800'}`}>韭菜盘 <span className="text-accent-2">AI</span></span>
@@ -443,7 +595,7 @@ const App: React.FC = () => {
           {/* 快讯下拉列表 */}
           {showTelegraphList && (
             <div
-              className="absolute top-full left-0 right-0 mt-2 fin-panel border fin-divider rounded-lg shadow-xl z-50 max-h-96 overflow-y-auto fin-scrollbar text-left"
+              className="absolute top-full left-0 right-0 mt-2 fin-panel border fin-divider rounded-lg shadow-xl z-50 max-h-96 overflow-y-auto fin-scrollbar"
               onMouseLeave={() => setShowTelegraphList(false)}
             >
               <div className={`p-2 border-b fin-divider text-xs font-medium ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>
@@ -486,6 +638,13 @@ const App: React.FC = () => {
           >
             <TrendingUp className="h-4 w-4" />
           </button>
+          <button
+            onClick={() => setShowMarketMoves(true)}
+            className={`p-2 rounded-lg fin-panel border fin-divider transition-colors ${colors.isDark ? 'text-slate-300 hover:text-white' : 'text-slate-600 hover:text-slate-900'} hover:border-cyan-400/40`}
+            title="异动中心"
+          >
+            <Activity className="h-4 w-4" />
+          </button>
           <ThemeSwitcher />
           <button
             onClick={() => setShowSettings(true)}
@@ -503,6 +662,9 @@ const App: React.FC = () => {
             }`}>
               {marketStatus?.statusText || '加载中...'}
             </div>
+            <div className={`font-mono text-[11px] mt-0.5 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+              {clock}
+            </div>
           </div>
           {/* 窗口控制按钮 */}
           <div className="flex items-center ml-2 border-l fin-divider pl-3">
@@ -514,7 +676,11 @@ const App: React.FC = () => {
               <Minus className="h-4 w-4" />
             </button>
             <button
-              onClick={() => { void toggleWindowMaximize(); }}
+              onClick={async () => {
+                await WindowMaximize();
+                const maximized = await WindowIsMaximised();
+                setIsMaximized(maximized);
+              }}
               className={`p-1.5 rounded transition-colors ${colors.isDark ? 'hover:bg-slate-700/50 text-slate-400 hover:text-white' : 'hover:bg-slate-200/50 text-slate-500 hover:text-slate-900'}`}
               title={isMaximized ? "还原" : "最大化"}
             >
@@ -542,6 +708,8 @@ const App: React.FC = () => {
             onAddStock={handleAddStock}
             onRemoveStock={handleRemoveStock}
             marketIndices={marketIndices}
+            selectedIndexCode={selectedSymbol}
+            onSelectIndex={handleSelectIndex}
           />
         </div>
 
@@ -549,10 +717,10 @@ const App: React.FC = () => {
         <ResizeHandle direction="horizontal" onResize={handleLeftResize} onResizeEnd={handleResizeEnd} />
 
         {/* Center Panel: Charts & Data */}
-        <div className="flex-1 flex flex-col min-w-0 fin-panel-center">
+        <div className="flex-1 flex flex-col min-w-0 fin-panel-center relative z-0">
           {/* Stock Header - A股风格 */}
-          <div className="px-6 py-3 shrink-0 border-b fin-divider-soft">
-            <div className="flex items-center justify-between mb-2">
+          <div className="px-6 py-2 shrink-0 border-b fin-divider-soft">
+            <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <span className={`text-lg font-bold ${colors.isDark ? 'text-white' : 'text-slate-800'}`}>{selectedStock.name}</span>
                 <span className={`text-sm font-mono ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>{selectedStock.symbol}</span>
@@ -571,7 +739,7 @@ const App: React.FC = () => {
                       const profitPercent = costAmount > 0 ? (profitLoss / costAmount) * 100 : 0;
                       const isProfit = profitLoss >= 0;
                       return (
-                        <span className={isProfit ? cc.upClass : cc.downClass}>
+                        <span className={isProfit ? 'text-red-500' : 'text-green-500'}>
                           {pos.shares}股 {isProfit ? '+' : ''}{profitLoss.toFixed(0)} ({isProfit ? '+' : ''}{profitPercent.toFixed(2)}%)
                         </span>
                       );
@@ -581,57 +749,199 @@ const App: React.FC = () => {
                   )}
                 </button>
               </div>
-              <div className={`text-3xl font-mono font-bold ${cc.getColorClass(selectedStock.change >= 0)}`}>
-                {selectedStock.price.toFixed(2)}
-              </div>
-            </div>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-4 text-sm">
-                <span className={`font-mono ${cc.getColorClass(selectedStock.change >= 0)}`}>
+              <div className="flex items-end gap-3">
+                <div className={`text-3xl leading-none font-mono font-bold ${selectedStock.change >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                  {selectedStock.price.toFixed(2)}
+                </div>
+                <div className="flex items-center gap-3 text-sm pb-0.5">
+                <span className={`font-mono ${selectedStock.change >= 0 ? 'text-red-500' : 'text-green-500'}`}>
                   {selectedStock.change >= 0 ? '+' : ''}{selectedStock.change.toFixed(2)}
                 </span>
-                <span className={`font-mono ${cc.getColorClass(selectedStock.change >= 0)}`}>
+                <span className={`font-mono ${selectedStock.change >= 0 ? 'text-red-500' : 'text-green-500'}`}>
                   {selectedStock.change >= 0 ? '+' : ''}{selectedStock.changePercent.toFixed(2)}%
                 </span>
-              </div>
-              <div className={`text-xs ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                {new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                </div>
               </div>
             </div>
           </div>
 
-          {/* A股传统行情数据 */}
-          <div className="grid grid-cols-4 gap-px p-2 border-b fin-divider-soft shrink-0 text-xs">
-            <AStockStatItem label="今开" value={selectedStock.open} preClose={selectedStock.preClose} isDark={colors.isDark} />
-            <AStockStatItem label="最高" value={selectedStock.high} preClose={selectedStock.preClose} isDark={colors.isDark} />
-            <AStockStatItem label="成交量" value={formatVolume(selectedStock.volume)} isPlain isDark={colors.isDark} />
-            <AStockStatItem label="昨收" value={selectedStock.preClose} isPlain isDark={colors.isDark} />
-            <AStockStatItem label="最低" value={selectedStock.low} preClose={selectedStock.preClose} isDark={colors.isDark} />
-            <AStockStatItem label="成交额" value={formatAmount(selectedStock.amount)} isPlain isDark={colors.isDark} />
-            <AStockStatItem label="振幅" value={selectedStock.preClose > 0 ? ((selectedStock.high - selectedStock.low) / selectedStock.preClose * 100).toFixed(2) + '%' : '--'} isPlain isDark={colors.isDark} />
+          {/* 行情 / 成交估值 / 市值资金 */}
+          <div className="border-b fin-divider-soft shrink-0 text-xs">
+            {isMaximized ? (
+              <div className="grid grid-cols-1 xl:grid-cols-3">
+                <div className="px-4 py-2 border-b xl:border-b-0 xl:border-r fin-divider-soft">
+                  <div className={`text-[10px] uppercase tracking-wide mb-1 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>行情</div>
+                  <div className="grid grid-cols-3 gap-x-3 gap-y-1.5">
+                    {marketOverview.quote.map((item) => (
+                      <div key={item.label} className="flex items-center gap-1.5 min-w-0">
+                        <span className={colors.isDark ? 'text-slate-500' : 'text-slate-400'}>{item.label}</span>
+                        <span className={`font-mono ${('colorClass' in item && item.colorClass) || (colors.isDark ? 'text-slate-200' : 'text-slate-700')}`}>{item.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="px-4 py-2 border-b xl:border-b-0 xl:border-r fin-divider-soft">
+                  <div className={`text-[10px] uppercase tracking-wide mb-1 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>成交 / 估值</div>
+                  <div className="grid grid-cols-3 gap-x-3 gap-y-1.5">
+                    {marketOverview.deal.map((item) => (
+                      <div key={item.label} className="flex items-center gap-1.5 min-w-0">
+                        <span className={colors.isDark ? 'text-slate-500' : 'text-slate-400'}>{item.label}</span>
+                        <span className={`font-mono ${('colorClass' in item && item.colorClass) || (colors.isDark ? 'text-slate-200' : 'text-slate-700')}`}>{item.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="px-4 py-2">
+                  <div className={`text-[10px] uppercase tracking-wide mb-1 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>市值 / 资金</div>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+                    {marketOverview.capital.map((item) => (
+                      <div key={item.label} className="flex items-center gap-1.5 min-w-0">
+                        <span className={colors.isDark ? 'text-slate-500' : 'text-slate-400'}>{item.label}</span>
+                        <span className={`font-mono ${('colorClass' in item && item.colorClass) || (colors.isDark ? 'text-slate-200' : 'text-slate-700')}`}>{item.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="px-4 py-0.5 relative z-[80]">
+                <div className="flex items-center gap-3 text-[11px]">
+                  <div className="relative group">
+                    <button
+                      type="button"
+                      className={`h-6 px-1.5 rounded-sm transition-colors flex items-center justify-center whitespace-nowrap ${
+                        colors.isDark ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      <span className="font-medium">行情数据</span>
+                    </button>
+                    <div className={`absolute left-0 top-full z-[120] mt-1 w-[320px] rounded-lg border fin-divider-soft shadow-xl fin-panel p-2 hidden group-hover:block ${colors.isDark ? 'bg-slate-900/95' : 'bg-white/95'}`}>
+                      <div className={`text-[10px] uppercase tracking-wide mb-1 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>行情</div>
+                      <div className="grid grid-cols-3 gap-x-2.5 gap-y-1.5">
+                        {marketOverview.quote.map((item) => (
+                          <div key={item.label} className="flex items-center gap-1 min-w-0">
+                            <span className={colors.isDark ? 'text-slate-500' : 'text-slate-400'}>{item.label}</span>
+                            <span className={`font-mono ${('colorClass' in item && item.colorClass) || (colors.isDark ? 'text-slate-200' : 'text-slate-700')}`}>{item.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="relative group">
+                    <button
+                      type="button"
+                      className={`h-6 px-1.5 rounded-sm transition-colors flex items-center justify-center whitespace-nowrap ${
+                        colors.isDark ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      <span className="font-medium">成交估值</span>
+                    </button>
+                    <div className={`absolute left-0 top-full z-[120] mt-1 w-[360px] rounded-lg border fin-divider-soft shadow-xl fin-panel p-2 hidden group-hover:block ${colors.isDark ? 'bg-slate-900/95' : 'bg-white/95'}`}>
+                      <div className={`text-[10px] uppercase tracking-wide mb-1 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>成交 / 估值</div>
+                      <div className="grid grid-cols-3 gap-x-2.5 gap-y-1.5">
+                        {marketOverview.deal.map((item) => (
+                          <div key={item.label} className="flex items-center gap-1 min-w-0">
+                            <span className={colors.isDark ? 'text-slate-500' : 'text-slate-400'}>{item.label}</span>
+                            <span className={`font-mono ${('colorClass' in item && item.colorClass) || (colors.isDark ? 'text-slate-200' : 'text-slate-700')}`}>{item.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="relative group">
+                    <button
+                      type="button"
+                      className={`h-6 px-1.5 rounded-sm transition-colors flex items-center justify-center whitespace-nowrap ${
+                        colors.isDark ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      <span className="font-medium">市值资金</span>
+                    </button>
+                    <div className={`absolute left-0 top-full z-[120] mt-1 w-[300px] rounded-lg border fin-divider-soft shadow-xl fin-panel p-2 hidden group-hover:block ${colors.isDark ? 'bg-slate-900/95' : 'bg-white/95'}`}>
+                      <div className={`text-[10px] uppercase tracking-wide mb-1 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>市值 / 资金</div>
+                      <div className="grid grid-cols-2 gap-x-2.5 gap-y-1.5">
+                        {marketOverview.capital.map((item) => (
+                          <div key={item.label} className="flex items-center gap-1 min-w-0">
+                            <span className={colors.isDark ? 'text-slate-500' : 'text-slate-400'}>{item.label}</span>
+                            <span className={`font-mono ${('colorClass' in item && item.colorClass) || (colors.isDark ? 'text-slate-200' : 'text-slate-700')}`}>{item.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
-          <div className="flex-1 flex flex-col min-h-0">
-             {/* Chart Section */}
-            <div className="flex-1 p-1 relative min-h-0">
-               <StockChartLW
-                  data={kLineData}
-                  updateMode={kLineUpdateMode}
-                  period={timePeriod}
-                  onPeriodChange={setTimePeriod}
-                  stock={selectedStock}
-               />
+          {/* 视图切换：趋势图 / F10全景 */}
+          <div className="px-4 py-1 border-b fin-divider-soft shrink-0">
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={handleShowTrend}
+                className={`text-xs px-2.5 py-0.5 rounded border transition-colors ${
+                  !showF10
+                    ? 'border-accent text-accent-2 bg-accent/10'
+                    : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                }`}
+              >
+                趋势图
+              </button>
+              <button
+                type="button"
+                onClick={handleShowF10}
+                className={`text-xs px-2.5 py-0.5 rounded border transition-colors ${
+                  showF10
+                    ? 'border-accent text-accent-2 bg-accent/10'
+                    : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                }`}
+              >
+                F10 全景
+              </button>
             </div>
+          </div>
 
-            {/* Bottom Resize Handle */}
-            <ResizeHandle direction="vertical" onResize={handleBottomResize} onResizeEnd={handleResizeEnd} />
+          <div className="flex-1 flex flex-col min-h-0 relative z-0">
+            {!showF10 ? (
+              <>
+                 {/* Chart Section */}
+                <div className="flex-1 p-1 relative min-h-0">
+                   <StockChart
+                      data={kLineData}
+                      period={timePeriod}
+                      onPeriodChange={setTimePeriod}
+                      stock={selectedStock}
+                      floatShares={f10Overview?.valuation?.floatShares}
+                      fallbackTurnoverRate={f10Overview?.valuation?.turnoverRate}
+                   />
+                </div>
 
-            {/* Bottom Info Panel: Order Book Only */}
-            <div style={{ height: bottomPanelHeight }} className="border-t fin-divider-soft flex shrink-0">
-               <div className="flex-1 overflow-hidden relative">
-                  <OrderBookComponent data={orderBook} />
-               </div>
-            </div>
+                {/* Bottom Resize Handle */}
+                <ResizeHandle direction="vertical" onResize={handleBottomResize} onResizeEnd={handleResizeEnd} />
+
+                {/* Bottom Info Panel: Order Book */}
+                <div style={{ height: bottomPanelHeight }} className="border-t fin-divider-soft flex shrink-0">
+                   <div className="flex-1 overflow-hidden relative">
+                      <OrderBookComponent data={orderBook} />
+                   </div>
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 min-h-0 border-t fin-divider-soft overflow-hidden">
+                <F10Panel
+                  overview={f10Overview}
+                  loading={f10Loading}
+                  error={f10Error}
+                  onRefresh={() => fetchF10Overview(selectedStock.symbol)}
+                  onCollapse={() => setShowF10(false)}
+                />
+              </div>
+            )}
           </div>
         </div>
 
@@ -641,13 +951,54 @@ const App: React.FC = () => {
         {/* Right Panel: AI Agents */}
         <div style={{ width: rightPanelWidth }} className="shrink-0 fin-panel overflow-hidden">
           <AgentRoom
-            stock={selectedStock}
-            kLineData={kLineData}
             session={currentSession}
             onSessionUpdate={setCurrentSession}
           />
         </div>
       </div>
+
+      {pendingRemoveSymbol && (
+        <div
+          className="fixed inset-0 z-[220] flex items-center justify-center bg-black/45"
+          onClick={handleCancelRemoveStock}
+        >
+          <div
+            className={`w-[360px] max-w-[92vw] rounded-xl border fin-divider shadow-2xl fin-panel p-4 ${
+              colors.isDark ? 'bg-slate-900/95' : 'bg-white/95'
+            }`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className={`text-sm font-semibold ${colors.isDark ? 'text-slate-100' : 'text-slate-800'}`}>
+              删除确认
+            </div>
+            <div className={`text-xs mt-2 leading-6 ${colors.isDark ? 'text-slate-300' : 'text-slate-600'}`}>
+              确认删除自选股「{pendingRemoveStock?.name || '--'} {pendingRemoveSymbol}」吗？
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={handleCancelRemoveStock}
+                disabled={isRemovingStock}
+                className={`px-3 py-1.5 rounded border text-xs transition-colors ${
+                  colors.isDark
+                    ? 'border-slate-600 text-slate-300 hover:bg-slate-800'
+                    : 'border-slate-300 text-slate-600 hover:bg-slate-100'
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmRemoveStock}
+                disabled={isRemovingStock}
+                className="px-3 py-1.5 rounded border border-red-500/40 text-xs text-red-300 hover:bg-red-500/15 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isRemovingStock ? '删除中...' : '确认删除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <SettingsDialog isOpen={showSettings} onClose={() => setShowSettings(false)} />
       <PositionDialog
@@ -658,42 +1009,42 @@ const App: React.FC = () => {
         currentPrice={selectedStock.price}
         position={currentSession?.position}
         onSave={async (shares, costPrice) => {
-          await updateStockPosition(selectedStock.symbol, shares, costPrice);
+          const result = await updateStockPosition(selectedStock.symbol, shares, costPrice);
+          if (result !== 'success') {
+            throw new Error(result || '持仓保存失败');
+          }
           const session = await getOrCreateSession(selectedStock.symbol, selectedStock.name);
           setCurrentSession(session);
         }}
       />
       <HotTrendDialog isOpen={showHotTrend} onClose={() => setShowHotTrend(false)} />
       <LongHuBangDialog isOpen={showLongHuBang} onClose={() => setShowLongHuBang(false)} />
+      <MarketMovesDialog isOpen={showMarketMoves} onClose={() => setShowMarketMoves(false)} />
     </div>
   );
 };
 
-// A股行情数据项组件
-interface AStockStatItemProps {
-  label: string;
-  value: number | string;
-  preClose?: number;
-  isPlain?: boolean;
-  isDark?: boolean;
-}
+const formatNumberOrDash = (value?: number, digits = 2): string => {
+  if (value === undefined || value === null || Number.isNaN(value)) return '--';
+  return value.toFixed(digits);
+};
 
-const AStockStatItem: React.FC<AStockStatItemProps> = ({ label, value, preClose, isPlain, isDark = true }) => {
-  const cc = useCandleColor();
-  let colorClass = isDark ? 'text-slate-100' : 'text-slate-700';
-  let displayValue = typeof value === 'string' ? value : value.toFixed(2);
+const formatPercentOrDash = (value?: number): string => {
+  if (value === undefined || value === null || Number.isNaN(value)) return '--';
+  return `${value.toFixed(2)}%`;
+};
 
-  if (!isPlain && typeof value === 'number' && preClose) {
-    if (value > preClose) colorClass = cc.upClass;
-    else if (value < preClose) colorClass = cc.downClass;
-  }
+const formatCapValue = (value?: number): string => {
+  if (value === undefined || value === null || Number.isNaN(value) || value <= 0) return '--';
+  if (value >= 100000000) return `${(value / 100000000).toFixed(2)}亿`;
+  return value.toFixed(2);
+};
 
-  return (
-    <div className="flex justify-between items-center px-3 py-1.5">
-      <span className={isDark ? 'text-slate-500' : 'text-slate-400'}>{label}</span>
-      <span className={`font-mono ${colorClass}`}>{displayValue}</span>
-    </div>
-  );
+const getPriceColorClass = (value?: number, preClose?: number): string | undefined => {
+  if (value === undefined || preClose === undefined || Number.isNaN(value) || Number.isNaN(preClose)) return undefined;
+  if (value > preClose) return 'text-red-500';
+  if (value < preClose) return 'text-green-500';
+  return undefined;
 };
 
 // 格式化成交量

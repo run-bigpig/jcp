@@ -1,19 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Stock, KLineData } from '../types';
 import { getAgentConfigs, AgentConfig } from '../services/strategyService';
-import { StockSession, ChatMessage, sendMeetingMessage, MeetingMessageRequest, getSessionMessages, retryAgent, retryAgentAndContinue, cancelInterruptedMeeting } from '../services/sessionService';
+import { StockSession, ChatMessage, sendMeetingMessage, MeetingMessageRequest, getSessionMessages } from '../services/sessionService';
 import { MessageSquare, Loader2, Send, User, Users, X, Reply, Trash2, Wrench, CheckCircle2, AlertCircle, Copy, Check, RotateCcw, Pencil, Square } from 'lucide-react';
 import { clearSessionMessages } from '../services/sessionService';
-import { NodeRenderer } from 'markstream-react';
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime';
 import { useMentionPicker } from '../hooks/useMentionPicker';
+import { useToast } from '../hooks/useToast';
 import { useTheme } from '../contexts/ThemeContext';
 import { CancelMeeting } from '../../wailsjs/go/main/App';
 import 'markstream-react/index.css';
 
 // 进度事件类型
 interface ProgressEvent {
-  type: 'agent_start' | 'agent_done' | 'tool_call' | 'tool_result' | 'streaming' | 'agent_error' | 'meeting_interrupted';
+  type: 'agent_start' | 'agent_done' | 'tool_call' | 'tool_result' | 'streaming';
   agentId: string;
   agentName: string;
   detail?: string;
@@ -26,14 +25,51 @@ interface ProgressState {
   currentAgentName: string | null;
   steps: { type: string; detail: string; done: boolean }[];
   streamingText: string;
+  lastStatus: string;
 }
 
 interface AgentRoomProps {
-  stock: Stock;
-  kLineData: KLineData[];
   session: StockSession | null;
   onSessionUpdate: (session: StockSession) => void;
 }
+
+const normalizeMarkdown = (input: string) => input.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+
+const evidenceLinePattern = /^(?:【\s*)?(?:参考)?(?:数据)?依据(?:\s*】)?\s*[:：]/;
+const evidenceInlinePattern = /(?:【\s*)?(?:参考)?(?:数据)?依据(?:\s*】)?\s*[:：]/;
+const evidenceHeaderPattern = /^(?:#{1,6}\s*)?(?:\*\*)?(?:【\s*)?(?:参考|数据)?依据(?:\s*】)?(?:\*\*)?\s*[:：]?\s*$/;
+const referenceMarkerPattern = /\[(\d+)\]/g;
+const referenceLinePattern = /^\[(\d+)\]\s*[：:、\-]?\s*(.+)$/;
+const referenceLineAltPattern = /^(\d+)[\).、）]\s*(.+)$/;
+const referenceLineCnPattern = /^【\s*(\d+)\s*】\s*(.+)$/;
+const inlineHeadingBoundaryPattern = /(盘中路径推演|盘中推演|修正点|事件与结构风险|应对与风控|应对建议|应对（只谈风控）|应对|风险与止损|触发条件|失效条件|操作建议|结论|参考依据)\s*[：:]/;
+const inlineHeadingPrefixPattern = /^([^\s:：]{2,20})\s*[：:]\s*(.+)$/;
+const bracketHeadingPrefixPattern = /^([【\[][^】\]]{2,20}[】\]])\s*(.+)$/;
+const inlineHeadingSemanticPattern = /(结论|理由|风控|失效|触发|建议|策略|操作|仓位|风险|应对|路径|计划|观察|判断|逻辑|机会|节奏|盘口|情绪)/;
+const inlineHeadingKeywords = [
+  '盘中路径推演',
+  '盘中推演',
+  '修正点',
+  '事件与结构风险',
+  '应对与风控',
+  '应对建议',
+  '应对（只谈风控）',
+  '应对',
+  '风险与止损',
+  '触发条件',
+  '失效条件',
+  '操作建议',
+  '结论',
+  '参考依据',
+];
+const dedupeHeadingKeywords = [
+  '触发条件',
+  '风险与止损',
+  '失效条件',
+  '应对与风控',
+  '操作与风控',
+  '应对建议',
+];
 
 export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }) => {
   const { colors } = useTheme();
@@ -49,14 +85,13 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
 
   // 跟踪当前活跃的 stockCode
   const currentStockCodeRef = useRef<string | null>(null);
-
-  // 跟踪上一次的 stockCode（用于检测切换）
-  const prevStockCodeRef = useRef<string | null>(null);
+  currentStockCodeRef.current = session?.stockCode || null;
 
   // 会议取消标识
   const meetingCancelledRef = useRef<Record<string, boolean>>({});
 
   // 使用自定义 Hooks
+  const { toast, showToast, hideToast } = useToast();
   const {
     mentionedAgents,
     showMentionPicker,
@@ -77,7 +112,727 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [failedUserMsgId, setFailedUserMsgId] = useState<string | null>(null);
-  const [retryingAgentId, setRetryingAgentId] = useState<string | null>(null);
+
+  const parseReferenceLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const m =
+      trimmed.match(referenceLinePattern) ||
+      trimmed.match(referenceLineAltPattern) ||
+      trimmed.match(referenceLineCnPattern);
+    if (!m || !m[2]) {
+      return null;
+    }
+    return { id: m[1], text: m[2].trim() };
+  };
+
+  const parseEmbeddedReferenceSegments = (text: string) => {
+    const refs = new Map<string, string>();
+    const markerPattern = /\[(\d+)\]|【\s*(\d+)\s*】/g;
+    const markers: { id: string; index: number; raw: string }[] = [];
+    for (let m = markerPattern.exec(text); m !== null; m = markerPattern.exec(text)) {
+      markers.push({
+        id: (m[1] || m[2] || '').trim(),
+        index: m.index,
+        raw: m[0],
+      });
+    }
+    if (markers.length === 0) {
+      return refs;
+    }
+    for (let i = 0; i < markers.length; i += 1) {
+      const marker = markers[i];
+      const start = marker.index + marker.raw.length;
+      const end = i + 1 < markers.length ? markers[i + 1].index : text.length;
+      const content = text
+        .slice(start, end)
+        .replace(/^[\s：:、\-]+/, '')
+        .trim();
+      if (marker.id && content) {
+        refs.set(marker.id, content);
+      }
+    }
+    return refs;
+  };
+
+  const normalizeNarrativeBody = (body: string) => {
+    return body
+      .replace(/\r\n/g, '\n')
+      .replace(/([。！？；])\s*(#{1,6}\s*(?:结论|理由|触发与风控|失效条件))/g, '$1\n$2')
+      .replace(/([。！？；])\s*(盘中路径推演|盘中推演|修正点|事件与结构风险|应对与风控|应对建议|应对（只谈风控）|应对|风险与止损|触发条件|失效条件|操作建议|结论|参考依据)\s*[：:]/g, '$1\n$2：')
+      .replace(/([。！？；])\s*([【\[](?:结论|理由|理由与热点|热点与情绪|盘中路径推演|盘中推演|盘口|盘口\/触发|触发\/风控|触发与风控|风险与止损|应对与风控|触发条件|失效条件|操作建议)[】\]])/g, '$1\n$2 ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  };
+
+  const isPrimaryNarrativeHeading = (title: string) => {
+    const cleaned = title.replace(/[【】\[\]\s：:]/g, '');
+    if (!cleaned) {
+      return false;
+    }
+    return [
+      '结论',
+      '综合结论',
+      '理由',
+      '触发与风控',
+      '风险与止损',
+      '应对与风控',
+      '触发条件',
+      '失效条件',
+      '操作建议',
+      '操作策略',
+      '盘中路径推演',
+      '盘中推演',
+      '修正点',
+      '事件与结构风险',
+      '应对建议',
+      '参考依据',
+    ].some(key => cleaned.includes(key) || key.includes(cleaned));
+  };
+
+  const splitInlineHeadingLine = (line: string) => {
+    const bracketMatch = line.match(bracketHeadingPrefixPattern);
+    if (bracketMatch) {
+      const title = bracketMatch[1].trim();
+      const rest = bracketMatch[2].trim();
+      const normalizedTitle = title.replace(/[【】\[\]\s]/g, '');
+      const isPureNumericRef = /^\d+$/.test(normalizedTitle);
+      if (rest.length > 0 && !isPureNumericRef) {
+        return { title, rest, primary: isPrimaryNarrativeHeading(title) };
+      }
+    }
+
+    const m = line.match(inlineHeadingPrefixPattern);
+    if (!m) {
+      return null;
+    }
+    const title = m[1].trim();
+    const rest = m[2].trim();
+    if (!inlineHeadingBoundaryPattern.test(`${title}：`)) {
+      if (
+        !inlineHeadingKeywords.some(key => title.includes(key) || key.includes(title)) &&
+        !inlineHeadingSemanticPattern.test(title)
+      ) {
+        return null;
+      }
+    }
+    if (rest.length === 0) {
+      return null;
+    }
+    return { title, rest, primary: isPrimaryNarrativeHeading(title) };
+  };
+
+  const formatHeadingLabel = (title: string, primary = true) => {
+    const cleaned = title.replace(/[：:]\s*$/, '').trim();
+    if (!cleaned) {
+      return '';
+    }
+    if (!primary) {
+      return cleaned;
+    }
+    if (
+      (cleaned.startsWith('【') && cleaned.endsWith('】')) ||
+      (cleaned.startsWith('[') && cleaned.endsWith(']'))
+    ) {
+      return cleaned;
+    }
+    return `【${cleaned}】`;
+  };
+
+  const narrativeClassByHeading = (title: string) => {
+    const cleaned = title.replace(/[【】\[\]\s]/g, '');
+    if (!cleaned) {
+      return '';
+    }
+    if (/(风险与止损|触发与风控|应对与风控|失效条件|止损)/.test(cleaned)) {
+      return 'agent-narrative-risk';
+    }
+    if (/(结论|操作建议|操作策略|策略建议)/.test(cleaned)) {
+      return 'agent-narrative-keypoint';
+    }
+    return '';
+  };
+
+  const normalizeDedupText = (input: string) => {
+    return input
+      .replace(/\[(\d+)\]|【\s*\d+\s*】/g, '')
+      .replace(/[，。；;、:\s]+/g, '')
+      .trim();
+  };
+
+  const shouldDedupeHeading = (title: string) => {
+    return dedupeHeadingKeywords.some(key => title.includes(key) || key.includes(title));
+  };
+
+  const parseReferenceBlock = (lines: string[]) => {
+    const refs = new Map<string, string>();
+    let refStart = -1;
+    let headerIndex = -1;
+    let i = lines.length - 1;
+    let collecting = false;
+    let pendingContinuation: string[] = [];
+    while (i >= 0) {
+      const line = lines[i];
+      const trimmed = line.trim();
+      if (!collecting) {
+        if (trimmed === '') {
+          i -= 1;
+          continue;
+        }
+        if (parseReferenceLine(trimmed)) {
+          collecting = true;
+        } else {
+          break;
+        }
+      }
+      if (trimmed === '') {
+        i -= 1;
+        continue;
+      }
+      const parsed = parseReferenceLine(trimmed);
+      if (!parsed) {
+        if (evidenceHeaderPattern.test(trimmed)) {
+          headerIndex = i;
+          break;
+        }
+        pendingContinuation.unshift(trimmed);
+        i -= 1;
+        continue;
+      }
+      const chunks = [parsed.text, ...pendingContinuation].map(chunk => chunk.trim()).filter(Boolean);
+      refs.set(parsed.id, chunks.join(' '));
+      pendingContinuation = [];
+      refStart = i;
+      i -= 1;
+    }
+    if (refs.size === 0 || refStart < 0) {
+      return { body: lines.join('\n').trim(), refs: new Map<string, string>() };
+    }
+    const bodyEnd = headerIndex >= 0 ? headerIndex : refStart;
+    const body = lines.slice(0, Math.max(0, bodyEnd)).join('\n').trim();
+    return { body, refs };
+  };
+
+  const splitEvidenceTail = (content: string) => {
+    const lines = content.split('\n');
+    let evidenceStart = -1;
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      if (evidenceLinePattern.test(lines[i].trim())) {
+        evidenceStart = i;
+        break;
+      }
+    }
+    if (evidenceStart < 0) {
+      return { body: content, evidence: '' };
+    }
+    return {
+      body: lines.slice(0, evidenceStart).join('\n').trim(),
+      evidence: lines.slice(evidenceStart).join('\n').trim(),
+    };
+  };
+
+  const parseEvidenceReferences = (evidenceText: string) => {
+    const refs = new Map<string, string>();
+    if (!evidenceText.trim()) {
+      return refs;
+    }
+
+    let currentId = '';
+    let currentChunks: string[] = [];
+    const flush = () => {
+      if (!currentId) {
+        return;
+      }
+      const merged = currentChunks
+        .map(chunk => chunk.trim())
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      if (merged) {
+        refs.set(currentId, merged);
+      }
+      currentId = '';
+      currentChunks = [];
+    };
+
+    for (const line of evidenceText.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      if (evidenceHeaderPattern.test(trimmed)) {
+        continue;
+      }
+
+      if (evidenceLinePattern.test(trimmed)) {
+        const inline = trimmed.replace(evidenceLinePattern, '').trim();
+        if (!inline) {
+          continue;
+        }
+        const parsedInline = parseReferenceLine(inline);
+        if (parsedInline) {
+          flush();
+          currentId = parsedInline.id;
+          currentChunks = [parsedInline.text];
+        } else if (currentId) {
+          currentChunks.push(inline);
+        }
+        continue;
+      }
+
+      const parsed = parseReferenceLine(trimmed);
+      if (parsed) {
+        flush();
+        currentId = parsed.id;
+        currentChunks = [parsed.text];
+        continue;
+      }
+
+      if (currentId) {
+        currentChunks.push(trimmed);
+      }
+    }
+
+    flush();
+    return refs;
+  };
+
+  const hasVisibleReferenceMarkers = (body: string, refs: Map<string, string>) => {
+    if (!body || refs.size === 0) {
+      return false;
+    }
+    for (const refId of refs.keys()) {
+      if (body.includes(`[${refId}]`) || body.includes(`【${refId}】`)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const renderCollapsedReferenceBlock = (refs: Map<string, string>) => {
+    if (refs.size === 0) {
+      return null;
+    }
+    const refText = Array.from(refs.entries())
+      .map(([id, text]) => `[${id}] ${text}`)
+      .join('\n');
+    return (
+      <details className="agent-evidence agent-evidence-collapsed">
+        <summary className="agent-evidence-summary">查看依据</summary>
+        <div className="agent-evidence-text">{refText}</div>
+      </details>
+    );
+  };
+
+  const extractInlineEvidenceFromMixedContent = (content: string) => {
+    const lines = content.split('\n');
+    const refs = new Map<string, string>();
+    const kept: string[] = [];
+    const continuationPattern = /^(?:来源|工具|时间|口径|指标|注[:：]?|\+|[-*]\s)/;
+
+    let skippingEvidence = false;
+    let currentId = '';
+    let currentChunks: string[] = [];
+
+    const flush = () => {
+      if (!currentId) {
+        return;
+      }
+      const merged = currentChunks
+        .map(chunk => chunk.trim())
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      if (merged) {
+        refs.set(currentId, merged);
+      }
+      currentId = '';
+      currentChunks = [];
+    };
+
+    const parseEvidenceInline = (line: string) => {
+      const inline = line.replace(evidenceInlinePattern, '').trim();
+      if (!inline) {
+        return;
+      }
+      const parsedInline = parseReferenceLine(inline);
+      if (parsedInline) {
+        flush();
+        currentId = parsedInline.id;
+        currentChunks = [parsedInline.text];
+        return;
+      }
+      const embeddedRefs = parseEmbeddedReferenceSegments(inline);
+      if (embeddedRefs.size > 0) {
+        flush();
+        embeddedRefs.forEach((value, key) => refs.set(key, value));
+        return;
+      }
+    };
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      const inlineEvidenceMatch = line.match(evidenceInlinePattern);
+
+      if (!skippingEvidence) {
+        if (evidenceHeaderPattern.test(trimmed) || inlineEvidenceMatch) {
+          skippingEvidence = true;
+          if (inlineEvidenceMatch) {
+            const idx = inlineEvidenceMatch.index ?? 0;
+            const prefix = line.slice(0, idx).trimEnd();
+            if (prefix) {
+              kept.push(prefix);
+            }
+            parseEvidenceInline(line.slice(idx).trim());
+          }
+          continue;
+        }
+        kept.push(line);
+        continue;
+      }
+
+      if (!trimmed) {
+        continue;
+      }
+
+      if (evidenceHeaderPattern.test(trimmed) || inlineEvidenceMatch) {
+        if (inlineEvidenceMatch) {
+          const idx = inlineEvidenceMatch.index ?? 0;
+          parseEvidenceInline(line.slice(idx).trim());
+        } else if (evidenceLinePattern.test(trimmed)) {
+          parseEvidenceInline(trimmed);
+        }
+        continue;
+      }
+
+      const parsed = parseReferenceLine(trimmed);
+      if (parsed) {
+        flush();
+        currentId = parsed.id;
+        currentChunks = [parsed.text];
+        continue;
+      }
+
+      const embeddedRefs = parseEmbeddedReferenceSegments(trimmed);
+      if (embeddedRefs.size > 0) {
+        flush();
+        embeddedRefs.forEach((value, key) => refs.set(key, value));
+        continue;
+      }
+
+      if (currentId && continuationPattern.test(trimmed)) {
+        currentChunks.push(trimmed);
+        continue;
+      }
+
+      flush();
+      skippingEvidence = false;
+      kept.push(line);
+    }
+
+    flush();
+
+    return {
+      body: kept.join('\n').replace(/\n{3,}/g, '\n\n').trim(),
+      refs,
+    };
+  };
+
+  const renderTextWithRefs = (text: string, refs: Map<string, string>, keyPrefix: string) => {
+    const pieces: React.ReactNode[] = [];
+    let last = 0;
+    let matched = false;
+    const matcher = new RegExp(referenceMarkerPattern);
+    for (let match = matcher.exec(text); match !== null; match = matcher.exec(text)) {
+      const refId = match[1];
+      const tip = refs.get(refId);
+      if (!tip) {
+        continue;
+      }
+      matched = true;
+      if (match.index > last) {
+        pieces.push(
+          <React.Fragment key={`${keyPrefix}-t-${last}`}>
+            {text.slice(last, match.index)}
+          </React.Fragment>,
+        );
+      }
+      pieces.push(
+        <sup
+          key={`${keyPrefix}-r-${refId}-${match.index}`}
+          className="agent-ref-marker"
+          data-tip={tip}
+        >
+          {refId}
+        </sup>,
+      );
+      last = match.index + match[0].length;
+    }
+    if (!matched) {
+      return text;
+    }
+    if (last < text.length) {
+      pieces.push(<React.Fragment key={`${keyPrefix}-tail`}>{text.slice(last)}</React.Fragment>);
+    }
+    return pieces;
+  };
+
+  const renderInlineWithRefs = (text: string, refs: Map<string, string>, keyPrefix: string) => {
+    const tokens: React.ReactNode[] = [];
+    const boldPattern = /(\*\*[^*]+\*\*)/g;
+    let last = 0;
+    let idx = 0;
+    for (let match = boldPattern.exec(text); match !== null; match = boldPattern.exec(text)) {
+      if (match.index > last) {
+        const plain = text.slice(last, match.index);
+        const renderedPlain = renderTextWithRefs(plain, refs, `${keyPrefix}-p-${idx}`);
+        tokens.push(<React.Fragment key={`${keyPrefix}-p-${idx}`}>{renderedPlain}</React.Fragment>);
+        idx += 1;
+      }
+      const boldRaw = match[0];
+      const boldInner = boldRaw.slice(2, -2);
+      const renderedBold = renderTextWithRefs(boldInner, refs, `${keyPrefix}-b-${idx}`);
+      tokens.push(<strong key={`${keyPrefix}-b-${idx}`}>{renderedBold}</strong>);
+      idx += 1;
+      last = match.index + boldRaw.length;
+    }
+    if (last < text.length) {
+      const tail = text.slice(last);
+      const renderedTail = renderTextWithRefs(tail, refs, `${keyPrefix}-t-${idx}`);
+      tokens.push(<React.Fragment key={`${keyPrefix}-t-${idx}`}>{renderedTail}</React.Fragment>);
+    }
+    if (tokens.length === 0) {
+      return renderTextWithRefs(text, refs, `${keyPrefix}-raw`);
+    }
+    return tokens;
+  };
+
+  const renderStructuredNarrative = (body: string, refs: Map<string, string>) => {
+    const lines = normalizeNarrativeBody(body).split('\n');
+    const nodes: React.ReactNode[] = [];
+    let paragraph: string[] = [];
+    let paragraphClass = '';
+    let listItems: string[] = [];
+    let key = 0;
+    const seenHeadingSignatures = new Set<string>();
+
+    const flushParagraph = () => {
+      if (paragraph.length === 0) {
+        return;
+      }
+      nodes.push(
+        <p
+          key={`p-${key}`}
+          className={`agent-narrative-paragraph${paragraphClass ? ` ${paragraphClass}` : ''}`}
+        >
+          {paragraph.map((line, index) => (
+            <React.Fragment key={`p-${key}-l-${index}`}>
+              {index > 0 && <br />}
+              {renderInlineWithRefs(line, refs, `p-${key}-${index}`)}
+            </React.Fragment>
+          ))}
+        </p>,
+      );
+      key += 1;
+      paragraph = [];
+      paragraphClass = '';
+    };
+
+    const flushList = () => {
+      if (listItems.length === 0) {
+        return;
+      }
+      nodes.push(
+        <ul key={`ul-${key}`} className="agent-narrative-list">
+          {listItems.map((item, index) => (
+            <li key={`ul-${key}-i-${index}`}>
+              {renderInlineWithRefs(item, refs, `ul-${key}-${index}`)}
+            </li>
+          ))}
+        </ul>,
+      );
+      key += 1;
+      listItems = [];
+    };
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) {
+        flushParagraph();
+        flushList();
+        continue;
+      }
+
+      const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+      const boldHeadingMatch = line.match(/^\*\*(.+)\*\*$/);
+      const quoteMatch = line.match(/^>\s+(.+)$/);
+      const listMatch = line.match(/^[-*]\s+(.+)$/);
+
+      if (headingMatch) {
+        flushParagraph();
+        flushList();
+        nodes.push(
+          <h3 key={`h-${key}`} className="agent-narrative-title">
+            {renderInlineWithRefs(formatHeadingLabel(headingMatch[2]), refs, `h-${key}`)}
+          </h3>,
+        );
+        key += 1;
+        continue;
+      }
+
+      if (boldHeadingMatch) {
+        flushParagraph();
+        flushList();
+        nodes.push(
+          <h3 key={`bh-${key}`} className="agent-narrative-title">
+            {renderInlineWithRefs(formatHeadingLabel(boldHeadingMatch[1]), refs, `bh-${key}`)}
+          </h3>,
+        );
+        key += 1;
+        continue;
+      }
+
+      if (quoteMatch) {
+        flushParagraph();
+        flushList();
+        nodes.push(
+          <blockquote key={`q-${key}`} className="agent-narrative-quote">
+            {renderInlineWithRefs(quoteMatch[1], refs, `q-${key}`)}
+          </blockquote>,
+        );
+        key += 1;
+        continue;
+      }
+
+      if (listMatch) {
+        flushParagraph();
+        listItems.push(listMatch[1]);
+        continue;
+      }
+
+      const inlineHeading = splitInlineHeadingLine(line);
+      if (inlineHeading) {
+        if (shouldDedupeHeading(inlineHeading.title)) {
+          const signature = `${normalizeDedupText(inlineHeading.title)}|${normalizeDedupText(inlineHeading.rest)}`;
+          if (signature !== '|' && seenHeadingSignatures.has(signature)) {
+            continue;
+          }
+          seenHeadingSignatures.add(signature);
+        }
+
+        flushParagraph();
+        flushList();
+        nodes.push(
+          <h3 key={`ih-${key}`} className={inlineHeading.primary ? 'agent-narrative-title' : 'agent-narrative-subtitle'}>
+            {renderInlineWithRefs(formatHeadingLabel(inlineHeading.title, inlineHeading.primary), refs, `ih-${key}`)}
+          </h3>,
+        );
+        key += 1;
+        if (inlineHeading.rest) {
+          paragraphClass = narrativeClassByHeading(inlineHeading.title);
+          paragraph.push(inlineHeading.rest);
+          flushParagraph();
+        }
+        continue;
+      }
+
+      flushList();
+      paragraph.push(line);
+    }
+
+    flushParagraph();
+    flushList();
+    return nodes;
+  };
+
+  const renderAgentContent = (raw: string) => {
+    const normalized = normalizeMarkdown(raw);
+    if (!normalized) {
+      return null;
+    }
+
+    const byRefBlock = parseReferenceBlock(normalized.split('\n'));
+    if (byRefBlock.refs.size > 0) {
+      const cleanedBody = byRefBlock.body
+        .split('\n')
+        .filter(line => !evidenceHeaderPattern.test(line.trim()))
+        .join('\n')
+        .trim();
+      const normalizedBody = normalizeNarrativeBody(cleanedBody);
+      const canHoverRefs = hasVisibleReferenceMarkers(normalizedBody, byRefBlock.refs);
+      return (
+        <>
+          <div className="agent-narrative">{renderStructuredNarrative(normalizedBody, byRefBlock.refs)}</div>
+          {canHoverRefs ? (
+            <div className="agent-evidence-hint">悬停文中角标可查看依据</div>
+          ) : (
+            renderCollapsedReferenceBlock(byRefBlock.refs)
+          )}
+        </>
+      );
+    }
+
+    const legacy = splitEvidenceTail(normalized);
+    const compactEvidence = legacy.evidence.replace(evidenceLinePattern, '').trim();
+    const cleanedLegacyBody = legacy.body
+      .split('\n')
+      .filter(line => !evidenceHeaderPattern.test(line.trim()))
+      .join('\n')
+      .trim();
+    const normalizedLegacyBody = normalizeNarrativeBody(cleanedLegacyBody);
+    const legacyRefs = parseEvidenceReferences(legacy.evidence);
+
+    if (legacyRefs.size > 0) {
+      const canHoverRefs = hasVisibleReferenceMarkers(normalizedLegacyBody, legacyRefs);
+      return (
+        <>
+          {normalizedLegacyBody && (
+            <div className="agent-narrative">{renderStructuredNarrative(normalizedLegacyBody, legacyRefs)}</div>
+          )}
+          {canHoverRefs ? (
+            <div className="agent-evidence-hint">悬停文中角标可查看依据</div>
+          ) : (
+            renderCollapsedReferenceBlock(legacyRefs)
+          )}
+        </>
+      );
+    }
+
+    const mixed = extractInlineEvidenceFromMixedContent(normalized);
+    if (mixed.refs.size > 0 && mixed.body !== normalized) {
+      const normalizedMixedBody = normalizeNarrativeBody(mixed.body);
+      const canHoverRefs = hasVisibleReferenceMarkers(normalizedMixedBody, mixed.refs);
+      return (
+        <>
+          {normalizedMixedBody && (
+            <div className="agent-narrative">{renderStructuredNarrative(normalizedMixedBody, mixed.refs)}</div>
+          )}
+          {canHoverRefs ? (
+            <div className="agent-evidence-hint">悬停文中角标可查看依据</div>
+          ) : (
+            renderCollapsedReferenceBlock(mixed.refs)
+          )}
+        </>
+      );
+    }
+
+    return (
+      <>
+        {normalizedLegacyBody && (
+          <div className="agent-narrative">{renderStructuredNarrative(normalizedLegacyBody, new Map<string, string>())}</div>
+        )}
+        {legacy.evidence && (
+          <details className="agent-evidence agent-evidence-collapsed">
+            <summary className="agent-evidence-summary">查看依据</summary>
+            <div className="agent-evidence-text">{compactEvidence || legacy.evidence}</div>
+          </details>
+        )}
+      </>
+    );
+  };
 
   // 进度状态
   const [progress, setProgress] = useState<ProgressState>({
@@ -85,24 +840,13 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
     currentAgentName: null,
     steps: [],
     streamingText: '',
+    lastStatus: '',
   });
-
-  // 在聊天窗口中添加系统提示消息
-  const addSystemMessage = (text: string) => {
-    setMessages(prev => [...prev, {
-      id: `sys-${Date.now()}-${Math.random()}`,
-      agentId: 'system',
-      agentName: '',
-      role: '',
-      content: text,
-      timestamp: Date.now(),
-    }]);
-  };
 
   // 取消指定股票的会议
   const cancelMeeting = (stockCode: string) => {
     // 调用后端取消 API
-    CancelMeeting(stockCode).catch(err => {
+    CancelMeeting(stockCode).catch((err: unknown) => {
       console.error('[AgentRoom] 取消会议失败:', err);
     });
     // 前端状态重置
@@ -113,8 +857,9 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
       currentAgentName: null,
       steps: [],
       streamingText: '',
+      lastStatus: '',
     });
-    addSystemMessage('讨论已停止');
+    showToast('讨论已停止', 'info');
   };
 
   // 加载Agent配置
@@ -135,7 +880,6 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
   // 监听策略切换事件，重新加载Agent配置
   useEffect(() => {
     const cleanup = EventsOn('strategy:changed', () => {
-      console.log('[AgentRoom] 策略已切换，重新加载Agent配置');
       loadAgents();
     });
     return () => {
@@ -146,29 +890,24 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
 
   // 当Session变化时，从后端加载最新消息
   useEffect(() => {
-    // 使用 prevStockCodeRef 获取真正的上一次 stockCode
-    const prevStockCode = prevStockCodeRef.current;
-    const newStockCode = session?.stockCode || null;
+    // 记录之前的 stockCode 用于取消
+    const prevStockCode = currentStockCodeRef.current;
 
-    if (newStockCode) {
+    if (session?.stockCode) {
       // 如果切换到新股票，取消之前股票的会议
-      if (prevStockCode && prevStockCode !== newStockCode && simulatingMap[prevStockCode]) {
+      if (prevStockCode && prevStockCode !== session.stockCode && simulatingMap[prevStockCode]) {
         cancelMeeting(prevStockCode);
-        addSystemMessage('已切换股票，之前的会议已取消');
+        showToast('已切换股票，之前的会议已取消', 'info');
       }
 
       // 从后端获取最新消息（包括切换期间产生的新消息）
-      getSessionMessages(newStockCode).then(msgs => {
+      getSessionMessages(session.stockCode).then(msgs => {
         setMessages(msgs || []);
       });
     } else {
       setMessages([]);
     }
     setUserQuery('');
-
-    // 更新 refs（在 effect 结束时更新，确保下次能正确检测切换）
-    prevStockCodeRef.current = newStockCode;
-    currentStockCodeRef.current = newStockCode;
   }, [session?.stockCode]);
 
   // 订阅会议消息事件（实时接收发言）
@@ -210,9 +949,17 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
               currentAgentName: event.agentName,
               steps: [],
               streamingText: '',
+              lastStatus: '',
             };
           case 'agent_done':
-            return { ...prev, currentAgent: null, currentAgentName: null, steps: [], streamingText: '' };
+            return {
+              ...prev,
+              currentAgent: null,
+              currentAgentName: null,
+              steps: [],
+              streamingText: '',
+              lastStatus: event.detail ? `${event.agentName}: ${event.detail}` : '',
+            };
           case 'tool_call':
             return {
               ...prev,
@@ -225,17 +972,10 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
             return { ...prev, steps: updatedSteps };
           case 'streaming':
             return { ...prev, streamingText: prev.streamingText + (event.content || '') };
-          case 'meeting_interrupted':
-            return prev; // 状态在外部处理
           default:
             return prev;
         }
       });
-
-      // meeting_interrupted 事件：停止会议进行状态（失败消息卡片内联按钮处理重试/放弃）
-      if (event.type === 'meeting_interrupted') {
-        setSimulatingMap(prev => ({ ...prev, [stockCode]: false }));
-      }
     });
 
     return () => {
@@ -307,7 +1047,7 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
           errorMsg = '网络连接失败，请检查网络';
         }
       }
-      addSystemMessage(errorMsg);
+      showToast(errorMsg, 'error');
       // 超时或失败时记录用户消息ID，显示重试/编辑按钮
       setFailedUserMsgId(userMsg.id);
     } finally {
@@ -380,7 +1120,7 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
       setCopiedId(msgId);
       setTimeout(() => setCopiedId(null), 2000);
     } catch (err) {
-      addSystemMessage('复制失败');
+      showToast('复制失败', 'error');
     }
   };
 
@@ -395,48 +1135,6 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
     setUserQuery(msg.content);
     setFailedUserMsgId(null);
     inputRef.current?.focus();
-  };
-
-  // 重试失败专家（根据 meetingMode 区分行为）
-  const handleRetryAgent = async (msg: ChatMessage) => {
-    if (!session || retryingAgentId) return;
-    const stockCode = session.stockCode;
-
-    setRetryingAgentId(msg.agentId);
-    // 移除失败的消息
-    setMessages(prev => prev.filter(m => m.id !== msg.id));
-    setSimulatingMap(prev => ({ ...prev, [stockCode]: true }));
-
-    try {
-      if (msg.meetingMode === 'smart') {
-        // 串行模式：重试并继续剩余专家
-        await retryAgentAndContinue(stockCode);
-      } else {
-        // 独立模式：仅重试该专家
-        const lastUserMsg = [...messages].reverse().find(m => m.agentId === 'user');
-        const query = lastUserMsg?.content || '';
-        await retryAgent(stockCode, msg.agentId, query);
-      }
-    } catch (e) {
-      console.error('[AgentRoom] retryAgent error:', e);
-      addSystemMessage(`${msg.agentName} 重试失败`);
-    } finally {
-      setRetryingAgentId(null);
-      setSimulatingMap(prev => ({ ...prev, [stockCode]: false }));
-    }
-  };
-
-  // 放弃中断的会议（串行模式下用户放弃剩余专家）
-  const handleAbandonMeeting = async (msg: ChatMessage) => {
-    if (!session) return;
-    try {
-      await cancelInterruptedMeeting(session.stockCode);
-    } catch (e) {
-      console.error('[AgentRoom] cancelInterruptedMeeting error:', e);
-    }
-    // 移除失败消息
-    setMessages(prev => prev.filter(m => m.id !== msg.id));
-    addSystemMessage('已放弃剩余专家讨论');
   };
 
   // 显示清空确认弹窗
@@ -580,12 +1278,12 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
                     </span>
                   </div>
                   <div className="relative">
-                    <div className={`text-sm p-3 rounded-2xl rounded-tl-none leading-relaxed shadow-sm agent-message-content ${
+                    <div className={`text-sm p-3 rounded-2xl rounded-tl-none leading-relaxed shadow-sm agent-message-content moderator-message-content ${
                       isSummary
                         ? (colors.isDark ? 'bg-gradient-to-br from-amber-900/40 to-orange-900/30 border border-amber-500/30 text-amber-100' : 'bg-gradient-to-br from-amber-100 to-orange-100 border border-amber-400/30 text-amber-900')
                         : (colors.isDark ? 'bg-slate-800/70 border border-amber-500/20 text-slate-200' : 'bg-slate-100 border border-amber-400/20 text-slate-700')
                     }`}>
-                      <NodeRenderer content={msg.content} />
+                      {renderAgentContent(msg.content)}
                     </div>
                     {/* 复制按钮 */}
                     <button
@@ -605,75 +1303,37 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
             <div key={msg.id} className={`flex gap-3 animate-in fade-in slide-in-from-bottom-2 duration-300 group`}>
               <div
                 className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 text-white shadow-md ring-2 ring-slate-900"
-                style={{ backgroundColor: msg.error ? '#ef4444' : (agent?.color || '#475569') }}
+                style={{ backgroundColor: agent?.color || '#475569' }}
               >
-                {msg.error ? <AlertCircle size={14} /> : (agent?.avatar || msg.agentName?.charAt(0))}
+                {agent?.avatar || msg.agentName?.charAt(0)}
               </div>
               <div className="flex-1 max-w-[85%]">
                 <div className="flex items-baseline gap-2 mb-1">
-                  <span className={`text-xs font-bold ${msg.error ? 'text-red-400' : (colors.isDark ? 'text-slate-300' : 'text-slate-600')}`}>{msg.agentName || agent?.name}</span>
+                  <span className={`text-xs font-bold ${colors.isDark ? 'text-slate-300' : 'text-slate-600'}`}>{msg.agentName || agent?.name}</span>
                   <span className={`text-[9px] uppercase border fin-divider px-1 rounded fin-chip ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>{msg.role || agent?.role}</span>
-                  {msg.error && (
-                    <span className="text-[9px] px-1 rounded bg-red-500/20 text-red-400 border border-red-500/30">失败</span>
-                  )}
                 </div>
                 <div className="relative">
-                  {msg.error ? (
-                    <div className={`text-sm p-3 rounded-2xl rounded-tl-none leading-relaxed shadow-sm border ${colors.isDark ? 'bg-red-950/30 border-red-500/30 text-red-300' : 'bg-red-50 border-red-300 text-red-600'}`}>
-                      <div className="flex items-center gap-2 mb-2">
-                        <AlertCircle size={14} />
-                        <span>分析失败</span>
-                      </div>
-                      <div className={`text-xs ${colors.isDark ? 'text-red-400/70' : 'text-red-500/70'}`}>{msg.error}</div>
-                      <div className="flex items-center gap-2 mt-2">
-                        <button
-                          onClick={() => handleRetryAgent(msg)}
-                          disabled={retryingAgentId === msg.agentId}
-                          className={`flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg transition-colors ${
-                            retryingAgentId === msg.agentId
-                              ? 'opacity-50 cursor-not-allowed'
-                              : (colors.isDark ? 'text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20' : 'text-amber-600 hover:text-amber-500 bg-amber-500/10 hover:bg-amber-500/20')
-                          }`}
-                        >
-                          {retryingAgentId === msg.agentId ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
-                          {retryingAgentId === msg.agentId ? '重试中...' : (msg.meetingMode === 'smart' ? '重试并继续' : '重试')}
-                        </button>
-                        {msg.meetingMode === 'smart' && (
-                          <button
-                            onClick={() => handleAbandonMeeting(msg)}
-                            className={`flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg transition-colors ${colors.isDark ? 'text-slate-400 bg-slate-500/10 hover:bg-slate-500/20' : 'text-slate-500 bg-slate-500/10 hover:bg-slate-500/20'}`}
-                          >
-                            <X size={12} />
-                            放弃剩余
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <div className={`text-sm p-3 rounded-2xl rounded-tl-none leading-relaxed shadow-sm agent-message-content ${colors.isDark ? 'text-slate-200 bg-slate-800/70 border border-slate-700/40' : 'text-slate-700 bg-white border border-slate-200'}`}>
-                        <NodeRenderer content={msg.content} />
-                      </div>
-                      {/* 操作按钮组 */}
-                      <div className="absolute -right-2 top-1 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button
-                          onClick={() => handleCopy(msg.id, msg.content)}
-                          className={`p-1.5 rounded-full shadow-lg ${colors.isDark ? 'bg-slate-700 hover:bg-slate-600 text-slate-300' : 'bg-white hover:bg-slate-100 text-slate-500 border border-slate-200'}`}
-                          title="复制"
-                        >
-                          {copiedId === msg.id ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
-                        </button>
-                        <button
-                          onClick={() => handleReplyTo(msg)}
-                          disabled={isSimulating}
-                          className={`p-1.5 rounded-full shadow-lg disabled:opacity-50 ${colors.isDark ? 'bg-slate-700 hover:bg-slate-600 text-slate-300' : 'bg-white hover:bg-slate-100 text-slate-500 border border-slate-200'}`}
-                          title="引用回复"
-                        >
-                          <Reply size={12} />
-                        </button>
-                      </div>
-                    </>
-                  )}
+                  <div className={`text-sm p-3 rounded-2xl rounded-tl-none leading-relaxed shadow-sm agent-message-content expert-message-content ${colors.isDark ? 'text-slate-200 bg-slate-800/70 border border-slate-700/40' : 'text-slate-700 bg-white border border-slate-200'}`}>
+                    {renderAgentContent(msg.content)}
+                  </div>
+                  {/* 操作按钮组 */}
+                  <div className="absolute -right-2 top-1 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={() => handleCopy(msg.id, msg.content)}
+                      className={`p-1.5 rounded-full shadow-lg ${colors.isDark ? 'bg-slate-700 hover:bg-slate-600 text-slate-300' : 'bg-white hover:bg-slate-100 text-slate-500 border border-slate-200'}`}
+                      title="复制"
+                    >
+                      {copiedId === msg.id ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+                    </button>
+                    <button
+                      onClick={() => handleReplyTo(msg)}
+                      disabled={isSimulating}
+                      className={`p-1.5 rounded-full shadow-lg disabled:opacity-50 ${colors.isDark ? 'bg-slate-700 hover:bg-slate-600 text-slate-300' : 'bg-white hover:bg-slate-100 text-slate-500 border border-slate-200'}`}
+                      title="引用回复"
+                    >
+                      <Reply size={12} />
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -707,14 +1367,23 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
                 )}
               </div>
             ) : (
-              <div className="flex items-center gap-2 justify-center">
-                <Loader2 className="animate-spin h-3 w-3 text-accent-2" />
-                <span className={`text-xs animate-pulse ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>会议进行中...</span>
+              <div className="flex flex-col items-center gap-1 justify-center">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="animate-spin h-3 w-3 text-accent-2" />
+                  <span className={`text-xs animate-pulse ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>会议进行中...</span>
+                </div>
+                {progress.lastStatus && (
+                  <div className={`text-[11px] ${colors.isDark ? 'text-amber-400/90' : 'text-amber-600'}`}>
+                    最近状态: {progress.lastStatus}
+                  </div>
+                )}
               </div>
             )}
           </div>
         )}
       </div>
+
+      {/* Input Area */}
       <div className="p-3 border-t fin-divider-soft shrink-0">
         {/* 引用预览 */}
         {replyToMessage && (
@@ -860,6 +1529,27 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
         </div>
       )}
 
+      {/* Toast 错误提示 */}
+      {toast.show && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-2 duration-300">
+          <div className={`flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg border ${
+            toast.type === 'error'
+              ? 'bg-red-900/90 border-red-500/50 text-red-100'
+              : toast.type === 'warning'
+              ? 'bg-amber-900/90 border-amber-500/50 text-amber-100'
+              : 'bg-[var(--accent)]/90 border-accent/50 text-white'
+          }`}>
+            <AlertCircle size={18} />
+            <span className="text-sm">{toast.message}</span>
+            <button
+              onClick={() => hideToast()}
+              className="ml-2 hover:opacity-70"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

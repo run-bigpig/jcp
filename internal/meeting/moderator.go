@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/run-bigpig/jcp/internal/adk/openai"
 	"github.com/run-bigpig/jcp/internal/models"
 
 	"google.golang.org/adk/model"
@@ -25,11 +24,10 @@ func NewModerator(llm model.LLM) *Moderator {
 
 // ModeratorDecision 小韭菜决策结果
 type ModeratorDecision struct {
-	Intent   string            `json:"intent"`
-	Selected []string          `json:"selected"`
-	Topic    string            `json:"topic"`
-	Opening  string            `json:"opening"`
-	Tasks    map[string]string `json:"tasks"` // 专家ID -> 专属分析任务
+	Intent   string   `json:"intent"`
+	Selected []string `json:"selected"`
+	Topic    string   `json:"topic"`
+	Opening  string   `json:"opening"`
 }
 
 // DiscussionEntry 讨论条目
@@ -53,7 +51,13 @@ func (m *Moderator) Analyze(ctx context.Context, stock *models.Stock, query stri
 
 // Summarize 总结讨论并给出结论
 func (m *Moderator) Summarize(ctx context.Context, stock *models.Stock, query string, history []DiscussionEntry) (string, error) {
-	prompt := m.buildSummarizePrompt(stock, query, history)
+	prompt := m.buildSummarizePrompt(stock, query, history, "")
+	return m.generate(ctx, prompt)
+}
+
+// SummarizeWithContext 总结讨论并结合补充数据给出结论
+func (m *Moderator) SummarizeWithContext(ctx context.Context, stock *models.Stock, query string, history []DiscussionEntry, extraContext string) (string, error) {
+	prompt := m.buildSummarizePrompt(stock, query, history, extraContext)
 	return m.generate(ctx, prompt)
 }
 
@@ -81,8 +85,7 @@ func (m *Moderator) generate(ctx context.Context, prompt string) (string, error)
 			}
 		}
 	}
-	// 过滤第三方工具调用标记后返回
-	return openai.FilterVendorToolCallMarkers(result.String()), nil
+	return result.String(), nil
 }
 
 // buildAnalyzePrompt 构建意图分析 Prompt
@@ -90,39 +93,60 @@ func (m *Moderator) buildAnalyzePrompt(stock *models.Stock, query string, agents
 	var sb strings.Builder
 	sb.WriteString("你是「财经会议室」的小韭菜，负责组织专家讨论。\n\n")
 	sb.WriteString("## 当前股票\n")
-	fmt.Fprintf(&sb, "%s (%s)，现价 %.2f，涨跌幅 %.2f%%\n\n", stock.Name, stock.Symbol, stock.Price, stock.ChangePercent)
+	sb.WriteString(fmt.Sprintf("%s (%s)，现价 %.2f，涨跌幅 %.2f%%\n\n",
+		stock.Name, stock.Symbol, stock.Price, stock.ChangePercent))
 	sb.WriteString("## 老韭菜问题\n")
 	sb.WriteString(query + "\n\n")
 	sb.WriteString("## 可邀请的专家\n")
 	for _, a := range agents {
-		fmt.Fprintf(&sb, "- %s（ID: %s）：%s\n", a.Name, a.ID, a.Role)
+		sb.WriteString(fmt.Sprintf("- %s（ID: %s）：%s\n", a.Name, a.ID, a.Role))
 	}
 	sb.WriteString("\n## 你的任务\n")
 	sb.WriteString("1. 分析老韭菜问题的核心意图\n")
-	sb.WriteString(fmt.Sprintf("2. 除非用户特别约束专家数量,否则选择 1-%d 位最相关的专家\n", len(agents)))
-	sb.WriteString("3. 为每位选中的专家制定一个明确的、与其专业匹配的分析任务（不要照搬用户原话，要根据专家角色拆解）\n")
-	sb.WriteString("4. 生成讨论议题和开场白\n\n")
+	sb.WriteString("2. 选择 2-4 位最相关的专家（简单问题选2位，常规选3位，复杂或高风险问题选4位）\n")
+	sb.WriteString("3. 生成讨论议题和开场白\n\n")
+	sb.WriteString("## 选人约束\n")
+	sb.WriteString("1. 涉及买卖/仓位/止损建议时，必须包含至少 1 位风控视角专家\n")
+	sb.WriteString("2. 涉及短线时点/盘中节奏时，至少包含技术面或资金面中的 1 位\n")
+	sb.WriteString("3. 当问题涉及中长期或估值逻辑时，补充基本面/估值/政策/舆情/异动中的至少 1 位\n")
+	sb.WriteString("4. 组合风格优先“1-2 位激进 + 其余稳健”，避免同质化\n")
+	sb.WriteString("5. 避免固定组合，在满足相关性的前提下优先引入不同视角\n\n")
 	sb.WriteString("## 输出格式（仅输出JSON）\n")
-	sb.WriteString(`{"intent":"意图","selected":["id1","id2"],"tasks":{"id1":"该专家需要分析的具体问题","id2":"该专家需要分析的具体问题"},"topic":"议题","opening":"开场白"}`)
+	sb.WriteString(`{"intent":"意图","selected":["id1"],"topic":"议题","opening":"开场白"}`)
 	return sb.String()
 }
 
 // buildSummarizePrompt 构建总结 Prompt
-func (m *Moderator) buildSummarizePrompt(stock *models.Stock, query string, history []DiscussionEntry) string {
+func (m *Moderator) buildSummarizePrompt(stock *models.Stock, query string, history []DiscussionEntry, extraContext string) string {
 	var sb strings.Builder
 	sb.WriteString("你是会议小韭菜，请总结讨论并给老韭菜结论。\n\n")
-	fmt.Fprintf(&sb, "## 股票：%s (%s)\n\n", stock.Name, stock.Symbol)
+	sb.WriteString(fmt.Sprintf("## 股票：%s (%s)\n\n", stock.Name, stock.Symbol))
 	sb.WriteString("## 老韭菜问题\n")
 	sb.WriteString(query + "\n\n")
+	if strings.TrimSpace(extraContext) != "" {
+		sb.WriteString("## 补充数据\n")
+		sb.WriteString(extraContext + "\n\n")
+	}
 	sb.WriteString("## 讨论记录\n")
 	for _, e := range history {
-		fmt.Fprintf(&sb, "【%s（%s）】\n%s\n\n", e.AgentName, e.Role, e.Content)
+		sb.WriteString(fmt.Sprintf("【%s（%s）】\n%s\n\n", e.AgentName, e.Role, e.Content))
 	}
 	sb.WriteString("## 输出要求\n")
-	sb.WriteString("1. 核心结论（直接回答老韭菜）\n")
-	sb.WriteString("2. 各方观点摘要\n")
-	sb.WriteString("3. 综合建议\n\n")
-	sb.WriteString("控制在 300 字以内。")
+	sb.WriteString("请按 Markdown 输出，严格使用以下结构（标题必须单独一行，顺序固定，每个标题只出现一次）：\n")
+	sb.WriteString("## 结论\n")
+	sb.WriteString("> 这里写结论（仅“结论”段允许使用引用格式）\n")
+	sb.WriteString("## 理由\n")
+	sb.WriteString("## 触发与风控\n")
+	sb.WriteString("## 失效条件\n")
+	sb.WriteString("不要输出角标 [1][2]、不要输出“参考依据”区块，不要原样堆砌字段名。\n")
+	sb.WriteString("不要使用代码块、行内代码、表格。\n")
+	sb.WriteString("不要输出任何列表编号或混合编号（禁止 1) / (1) / 1. / 一、）。\n")
+	sb.WriteString("小标题必须单独一行，不要把“标题：正文”写在同一行。\n")
+	sb.WriteString("重点只用 **加粗**，不要使用除“结论段引用”之外的引用格式。\n")
+	sb.WriteString("四段内容前后必须一致：若“结论”偏观望/持有/减仓，则“触发与风控”不得出现无条件买入或加仓。\n")
+	sb.WriteString("内容必须覆盖：核心结论、综合建议与触发条件、风险与失效条件。\n")
+	sb.WriteString("请融合专家观点并去重，避免重复段落。\n\n")
+	sb.WriteString("控制在 220-420 字，严禁编造数据；缺失数据请明确写“未获取到”。")
 	return sb.String()
 }
 

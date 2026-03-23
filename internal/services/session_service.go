@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,25 +38,72 @@ func (ss *SessionService) ensureDir() {
 	}
 }
 
+func normalizeSessionStockCode(stockCode string) string {
+	return strings.ToLower(strings.TrimSpace(stockCode))
+}
+
+func candidateStockCodes(stockCode string) []string {
+	trimmed := strings.TrimSpace(stockCode)
+	normalized := normalizeSessionStockCode(trimmed)
+	candidates := make([]string, 0, 3)
+	if normalized != "" {
+		candidates = append(candidates, normalized)
+		upper := strings.ToUpper(normalized)
+		if upper != normalized {
+			candidates = append(candidates, upper)
+		}
+	}
+	if trimmed != "" && trimmed != normalized {
+		candidates = append(candidates, trimmed)
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	unique := make([]string, 0, len(candidates))
+	for _, item := range candidates {
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		unique = append(unique, item)
+	}
+	return unique
+}
+
 // getSessionPath 获取Session文件路径
 func (ss *SessionService) getSessionPath(stockCode string) string {
-	return filepath.Join(ss.sessionsDir, stockCode+".json")
+	return filepath.Join(ss.sessionsDir, normalizeSessionStockCode(stockCode)+".json")
 }
 
 // GetOrCreateSession 获取或创建Session
 func (ss *SessionService) GetOrCreateSession(stockCode, stockName string) (*models.StockSession, error) {
+	code := normalizeSessionStockCode(stockCode)
+	if code == "" {
+		return nil, fmt.Errorf("stock code is empty")
+	}
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
 	// 先从内存缓存获取
-	if session, ok := ss.sessions[stockCode]; ok {
+	if session, ok := ss.sessions[code]; ok {
+		if strings.TrimSpace(stockName) != "" && strings.TrimSpace(session.StockName) == "" {
+			session.StockName = strings.TrimSpace(stockName)
+			session.UpdatedAt = time.Now().UnixMilli()
+			_ = ss.saveSession(session)
+		}
 		return session, nil
 	}
 
 	// 尝试从文件加载
-	session, err := ss.loadSession(stockCode)
+	session, err := ss.loadSession(code)
 	if err == nil {
-		ss.sessions[stockCode] = session
+		if strings.TrimSpace(stockName) != "" && strings.TrimSpace(session.StockName) == "" {
+			session.StockName = strings.TrimSpace(stockName)
+			session.UpdatedAt = time.Now().UnixMilli()
+			_ = ss.saveSession(session)
+		}
+		ss.sessions[code] = session
 		return session, nil
 	}
 
@@ -63,34 +111,56 @@ func (ss *SessionService) GetOrCreateSession(stockCode, stockName string) (*mode
 	now := time.Now().UnixMilli()
 	session = &models.StockSession{
 		ID:        uuid.New().String(),
-		StockCode: stockCode,
+		StockCode: code,
 		StockName: stockName,
 		Messages:  []models.ChatMessage{},
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
 
-	ss.sessions[stockCode] = session
+	ss.sessions[code] = session
 	return session, ss.saveSession(session)
 }
 
 // loadSession 从文件加载Session
 func (ss *SessionService) loadSession(stockCode string) (*models.StockSession, error) {
-	path := ss.getSessionPath(stockCode)
-	data, err := os.ReadFile(path)
+	var data []byte
+	var err error
+	candidates := candidateStockCodes(stockCode)
+	for _, candidate := range candidates {
+		path := ss.getSessionPath(candidate)
+		data, err = os.ReadFile(path)
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("session not found: %s", stockCode)
 	}
 
 	var session models.StockSession
 	if err := json.Unmarshal(data, &session); err != nil {
 		return nil, err
 	}
+	session.StockCode = normalizeSessionStockCode(session.StockCode)
+	if session.StockCode == "" {
+		session.StockCode = normalizeSessionStockCode(stockCode)
+	}
+	if session.Messages == nil {
+		session.Messages = []models.ChatMessage{}
+	}
 	return &session, nil
 }
 
 // saveSession 保存Session到文件
 func (ss *SessionService) saveSession(session *models.StockSession) error {
+	if session == nil {
+		return fmt.Errorf("session is nil")
+	}
+	session.StockCode = normalizeSessionStockCode(session.StockCode)
+	if session.StockCode == "" {
+		return fmt.Errorf("stock code is empty")
+	}
 	path := ss.getSessionPath(session.StockCode)
 	data, err := json.MarshalIndent(session, "", "  ")
 	if err != nil {
@@ -101,38 +171,46 @@ func (ss *SessionService) saveSession(session *models.StockSession) error {
 
 // GetSession 获取Session
 func (ss *SessionService) GetSession(stockCode string) *models.StockSession {
+	code := normalizeSessionStockCode(stockCode)
+	if code == "" {
+		return nil
+	}
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
 	// 先从内存缓存获取
-	if session, ok := ss.sessions[stockCode]; ok {
+	if session, ok := ss.sessions[code]; ok {
 		return session
 	}
 
 	// 内存没有则尝试从文件加载
-	session, err := ss.loadSession(stockCode)
+	session, err := ss.loadSession(code)
 	if err != nil {
 		return nil
 	}
 
-	ss.sessions[stockCode] = session
+	ss.sessions[code] = session
 	return session
 }
 
 // AddMessage 添加消息到Session
 func (ss *SessionService) AddMessage(stockCode string, msg models.ChatMessage) error {
+	code := normalizeSessionStockCode(stockCode)
+	if code == "" {
+		return fmt.Errorf("stock code is empty")
+	}
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
-	session, ok := ss.sessions[stockCode]
+	session, ok := ss.sessions[code]
 	if !ok {
 		// 尝试从文件加载
 		var err error
-		session, err = ss.loadSession(stockCode)
+		session, err = ss.loadSession(code)
 		if err != nil {
-			return fmt.Errorf("session not found: %s", stockCode)
+			return fmt.Errorf("session not found: %s", code)
 		}
-		ss.sessions[stockCode] = session
+		ss.sessions[code] = session
 	}
 
 	msg.ID = uuid.New().String()
@@ -144,18 +222,22 @@ func (ss *SessionService) AddMessage(stockCode string, msg models.ChatMessage) e
 
 // AddMessages 批量添加消息到Session
 func (ss *SessionService) AddMessages(stockCode string, msgs []models.ChatMessage) error {
+	code := normalizeSessionStockCode(stockCode)
+	if code == "" {
+		return fmt.Errorf("stock code is empty")
+	}
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
-	session, ok := ss.sessions[stockCode]
+	session, ok := ss.sessions[code]
 	if !ok {
 		// 尝试从文件加载
 		var err error
-		session, err = ss.loadSession(stockCode)
+		session, err = ss.loadSession(code)
 		if err != nil {
-			return fmt.Errorf("session not found: %s", stockCode)
+			return fmt.Errorf("session not found: %s", code)
 		}
-		ss.sessions[stockCode] = session
+		ss.sessions[code] = session
 	}
 
 	now := time.Now().UnixMilli()
@@ -170,39 +252,47 @@ func (ss *SessionService) AddMessages(stockCode string, msgs []models.ChatMessag
 
 // GetMessages 获取Session消息
 func (ss *SessionService) GetMessages(stockCode string) []models.ChatMessage {
+	code := normalizeSessionStockCode(stockCode)
+	if code == "" {
+		return []models.ChatMessage{}
+	}
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
 	// 先从内存缓存获取
-	if session, ok := ss.sessions[stockCode]; ok {
+	if session, ok := ss.sessions[code]; ok {
 		return session.Messages
 	}
 
 	// 内存没有则尝试从文件加载
-	session, err := ss.loadSession(stockCode)
+	session, err := ss.loadSession(code)
 	if err != nil {
 		return []models.ChatMessage{}
 	}
 
 	// 加载成功后缓存到内存
-	ss.sessions[stockCode] = session
+	ss.sessions[code] = session
 	return session.Messages
 }
 
 // ClearMessages 清空Session消息
 func (ss *SessionService) ClearMessages(stockCode string) error {
+	code := normalizeSessionStockCode(stockCode)
+	if code == "" {
+		return fmt.Errorf("stock code is empty")
+	}
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
-	session, ok := ss.sessions[stockCode]
+	session, ok := ss.sessions[code]
 	if !ok {
 		// 尝试从文件加载
 		var err error
-		session, err = ss.loadSession(stockCode)
+		session, err = ss.loadSession(code)
 		if err != nil {
-			return fmt.Errorf("session not found: %s", stockCode)
+			return fmt.Errorf("session not found: %s", code)
 		}
-		ss.sessions[stockCode] = session
+		ss.sessions[code] = session
 	}
 
 	session.Messages = []models.ChatMessage{}
@@ -212,18 +302,30 @@ func (ss *SessionService) ClearMessages(stockCode string) error {
 
 // UpdatePosition 更新持仓信息
 func (ss *SessionService) UpdatePosition(stockCode string, shares int64, costPrice float64) error {
+	code := normalizeSessionStockCode(stockCode)
+	if code == "" {
+		return fmt.Errorf("stock code is empty")
+	}
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
-	session, ok := ss.sessions[stockCode]
+	session, ok := ss.sessions[code]
 	if !ok {
 		// 尝试从文件加载
 		var err error
-		session, err = ss.loadSession(stockCode)
+		session, err = ss.loadSession(code)
 		if err != nil {
-			return fmt.Errorf("session not found: %s", stockCode)
+			now := time.Now().UnixMilli()
+			session = &models.StockSession{
+				ID:        uuid.New().String(),
+				StockCode: code,
+				StockName: code,
+				Messages:  []models.ChatMessage{},
+				CreatedAt: now,
+				UpdatedAt: now,
+			}
 		}
-		ss.sessions[stockCode] = session
+		ss.sessions[code] = session
 	}
 
 	session.Position = &models.StockPosition{
@@ -236,17 +338,21 @@ func (ss *SessionService) UpdatePosition(stockCode string, shares int64, costPri
 
 // GetPosition 获取持仓信息
 func (ss *SessionService) GetPosition(stockCode string) *models.StockPosition {
+	code := normalizeSessionStockCode(stockCode)
+	if code == "" {
+		return nil
+	}
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
-	session, ok := ss.sessions[stockCode]
+	session, ok := ss.sessions[code]
 	if !ok {
 		// 尝试从文件加载
-		session, err := ss.loadSession(stockCode)
+		session, err := ss.loadSession(code)
 		if err != nil {
 			return nil
 		}
-		ss.sessions[stockCode] = session
+		ss.sessions[code] = session
 		return session.Position
 	}
 	return session.Position

@@ -39,9 +39,14 @@ func NewExpertAgentBuilderFull(llm model.LLM, aiConfig *models.AIConfig, registr
 	return &ExpertAgentBuilder{llm: llm, aiConfig: aiConfig, toolRegistry: registry, mcpManager: mcpMgr}
 }
 
+// BuildAgent 根据配置构建 LLM Agent
+func (b *ExpertAgentBuilder) BuildAgent(config *models.AgentConfig, stock *models.Stock, query string, position *models.StockPosition) (agent.Agent, error) {
+	return b.BuildAgentWithContext(config, stock, query, "", "", "", position)
+}
+
 // BuildAgentWithContext 根据配置构建 LLM Agent（支持引用上下文）
-func (b *ExpertAgentBuilder) BuildAgentWithContext(config *models.AgentConfig, stock *models.Stock, query string, replyContent string, position *models.StockPosition) (agent.Agent, error) {
-	instruction := b.buildInstructionWithContext(config, stock, query, replyContent, position)
+func (b *ExpertAgentBuilder) BuildAgentWithContext(config *models.AgentConfig, stock *models.Stock, query string, replyContent string, coreContext string, intentContext string, position *models.StockPosition) (agent.Agent, error) {
+	instruction := b.buildInstructionWithContext(config, stock, query, replyContent, coreContext, intentContext, position)
 
 	// 获取 Agent 配置的工具
 	var agentTools []tool.Tool
@@ -64,13 +69,26 @@ func (b *ExpertAgentBuilder) BuildAgentWithContext(config *models.AgentConfig, s
 	// 构建生成配置（应用 temperature 和 maxTokens）
 	var generateConfig *genai.GenerateContentConfig
 	if b.aiConfig != nil {
-		temp := float32(b.aiConfig.Temperature)
 		generateConfig = &genai.GenerateContentConfig{
-			Temperature: &temp,
+			MaxOutputTokens: int32(b.aiConfig.MaxTokens),
 		}
-		if b.aiConfig.MaxTokens > 0 {
-			generateConfig.MaxOutputTokens = int32(b.aiConfig.MaxTokens)
+		if !shouldSkipSamplingByModel(b.aiConfig.ModelName) {
+			temp := float32(b.aiConfig.Temperature)
+			generateConfig.Temperature = &temp
 		}
+	}
+
+	var beforeModelCallbacks []llmagent.BeforeModelCallback
+	if b.aiConfig != nil && shouldSkipSamplingByModel(b.aiConfig.ModelName) {
+		beforeModelCallbacks = append(beforeModelCallbacks, func(ctx agent.CallbackContext, req *model.LLMRequest) (*model.LLMResponse, error) {
+			if req.Config == nil {
+				req.Config = &genai.GenerateContentConfig{}
+			}
+			one := float32(1)
+			req.Config.Temperature = &one
+			req.Config.TopP = &one
+			return nil, nil
+		})
 	}
 
 	return llmagent.New(llmagent.Config{
@@ -81,11 +99,33 @@ func (b *ExpertAgentBuilder) BuildAgentWithContext(config *models.AgentConfig, s
 		Tools:                 agentTools,
 		Toolsets:              toolsets,
 		GenerateContentConfig: generateConfig,
+		BeforeModelCallbacks:  beforeModelCallbacks,
 	})
 }
 
+// BuildInstructionPreview 返回构建后的完整指令文本，便于调试日志与排障。
+func (b *ExpertAgentBuilder) BuildInstructionPreview(config *models.AgentConfig, stock *models.Stock, query string, replyContent string, coreContext string, intentContext string, position *models.StockPosition) string {
+	return b.buildInstructionWithContext(config, stock, query, replyContent, coreContext, intentContext, position)
+}
+
+func shouldSkipSamplingByModel(modelName string) bool {
+	name := strings.ToLower(modelName)
+	if strings.HasPrefix(name, "o1") || strings.HasPrefix(name, "o3") || strings.HasPrefix(name, "o4") {
+		return true
+	}
+	if strings.HasPrefix(name, "gpt-5") || strings.HasPrefix(name, "gpt5") {
+		return true
+	}
+	return false
+}
+
+// buildInstruction 构建 Agent 指令
+func (b *ExpertAgentBuilder) buildInstruction(config *models.AgentConfig, stock *models.Stock, query string, position *models.StockPosition) string {
+	return b.buildInstructionWithContext(config, stock, query, "", "", "", position)
+}
+
 // buildInstructionWithContext 构建 Agent 指令（支持引用上下文）
-func (b *ExpertAgentBuilder) buildInstructionWithContext(config *models.AgentConfig, stock *models.Stock, query string, replyContent string, position *models.StockPosition) string {
+func (b *ExpertAgentBuilder) buildInstructionWithContext(config *models.AgentConfig, stock *models.Stock, query string, replyContent string, coreContext string, intentContext string, position *models.StockPosition) string {
 	baseInstruction := config.Instruction
 	if baseInstruction == "" {
 		baseInstruction = fmt.Sprintf("你是一位%s，名字是%s。", config.Role, config.Name)
@@ -122,35 +162,84 @@ func (b *ExpertAgentBuilder) buildInstructionWithContext(config *models.AgentCon
 当前时间: %s
 市场状态: %s
 
-## 工具调用规范
-当你需要调用工具时，必须通过系统提供的标准 function call 机制进行调用。
-**重要：需要调用工具时，不要在工具调用前输出任何思考过程或分析文字，直接发起工具调用。工具返回结果后，再基于结果组织你的回答。**
-禁止在回复文本中输出任何自定义的工具调用标签，包括但不限于：
-- <tool_call>、</tool_call>
-- <tool_call_begin>、</tool_call_end>
-- <invoke>、</invoke>
-- <tool>、</tool>
-- 任何类似 <xxx:tool_call> 格式的标签
-直接使用 API 提供的 tool_calls 功能，不要在文本中模拟工具调用。
-
 股票: %s (%s)
 当前价格: %.2f
 涨跌幅: %.2f%%
 `, baseInstruction, toolsDescription, timeStr, marketStatus, stock.Symbol, stock.Name, stock.Price, stock.ChangePercent)
 
-	// 如果有持仓信息，加入上下文
 	if position != nil && position.Shares > 0 {
-		marketValue := float64(position.Shares) * stock.Price
 		costAmount := float64(position.Shares) * position.CostPrice
-		profitLoss := marketValue - costAmount
-		profitPercent := 0.0
+		marketValue := float64(position.Shares) * stock.Price
+		pnlValue := marketValue - costAmount
+		pnlRatio := 0.0
 		if costAmount > 0 {
-			profitPercent = (profitLoss / costAmount) * 100
+			pnlRatio = (pnlValue / costAmount) * 100
 		}
+		prompt += fmt.Sprintf(
+			"\n【用户持仓】\n持有 %d 股，成本价 %.2f，按当前价 %.2f 估算浮盈亏 %.2f（%.2f%%）。\n请把补仓/减仓/止损与仓位控制作为优先分析维度。\n",
+			position.Shares,
+			position.CostPrice,
+			stock.Price,
+			pnlValue,
+			pnlRatio,
+		)
+	}
+
+	if strings.TrimSpace(stock.Symbol) != "" || strings.TrimSpace(stock.Name) != "" {
+		prompt += fmt.Sprintf("\n【硬性约束】本轮讨论标的是 %s (%s)。除非代码和名称都为空，否则禁止要求用户再次提供股票代码/名称。\n", stock.Symbol, stock.Name)
+	}
+	if b.requiresMarketCodeArguments(config) {
+		prompt += fmt.Sprintf(
+			"\n【工具调用参数硬约束】\n"+
+				"- 调用 get_kline_data 时必须带参数：{\"code\":\"%s\",\"period\":\"1d\",\"days\":60}\n"+
+				"- 调用 get_stock_realtime 时必须带参数：{\"codes\":[\"%s\"]}\n"+
+				"- 若分析包含“分时/盘中/承接”判断，需额外调用 get_kline_data：{\"code\":\"%s\",\"period\":\"5m\",\"days\":2}\n"+
+				"- get_market_status 可空参数调用\n"+
+				"- 禁止空参数调用 get_kline_data / get_stock_realtime\n",
+			stock.Symbol,
+			stock.Symbol,
+			stock.Symbol,
+		)
+	}
+	if b.hasTool(config, "get_orderbook") {
+		prompt += fmt.Sprintf(
+			"\n【盘口工具约束】\n"+
+				"- 调用 get_orderbook 时必须携带当前股票代码：{\"code\":\"%s\"}\n"+
+				"- 若结论涉及分时承接/买卖盘强弱，必须先调用 get_orderbook；仅当工具返回空或报错时，才可写“未获取到分时承接细节”\n"+
+				"- 不要空参数调用 get_orderbook\n",
+			stock.Symbol,
+		)
+	}
+	if b.hasTool(config, "get_index_fund_flow") {
+		indexCode := preferredIndexCodeByStock(stock.Symbol)
+		prompt += fmt.Sprintf(
+			"\n【指数资金流工具约束】\n"+
+				"- 调用 get_index_fund_flow 必须带 code 参数，建议：{\"code\":\"%s\",\"interval\":\"1\",\"limit\":120}\n"+
+				"- 不要空参数调用 get_index_fund_flow\n",
+			indexCode,
+		)
+	}
+	if b.hasTool(config, "get_stock_announcements") {
+		prompt += fmt.Sprintf(
+			"\n【公告工具约束】\n"+
+				"- 调用 get_stock_announcements 时必须携带当前股票代码：{\"code\":\"%s\",\"page\":1,\"pageSize\":10}\n"+
+				"- 不要空参数调用 get_stock_announcements\n",
+			stock.Symbol,
+		)
+	}
+
+	if coreContext != "" {
 		prompt += fmt.Sprintf(`
-用户持仓: %d股，成本价 %.2f
-持仓市值: %.2f，盈亏: %.2f (%.2f%%)
-`, position.Shares, position.CostPrice, marketValue, profitLoss, profitPercent)
+【核心数据包】
+%s
+`, coreContext)
+	}
+
+	if intentContext != "" {
+		prompt += fmt.Sprintf(`
+【意图补充数据】
+%s
+`, intentContext)
 	}
 
 	// 如果有引用内容，加入上下文
@@ -159,13 +248,52 @@ func (b *ExpertAgentBuilder) buildInstructionWithContext(config *models.AgentCon
 %s
 ---
 
-你的分析任务: %s
+小韭菜问题: %s
 
-请结合以上引用的观点，发表你的专业看法。可以赞同、补充或反驳。回复控制在150字以内。`, replyContent, query)
+请结合以上引用的观点，发表你的看法。可以赞同、补充或反驳。
+
+请按 Markdown 输出，严格使用以下结构（标题必须单独一行，顺序固定，每个标题只出现一次）：
+## 结论
+> 这里写结论（仅“结论”段允许使用引用格式）
+## 理由
+## 触发与风控
+## 失效条件
+
+格式约束（必须遵守）：
+- 不要输出“参考依据”区块，不要角标 [1][2]，不要原样堆砌工具字段名。
+- 不要使用代码块、行内代码、表格。
+- 不要输出任何列表编号或混合编号（禁止 1) / (1) / 1. / 一、）。
+- 小标题必须单独一行，不要把“标题：正文”写在同一行。
+- 重点只用 **加粗**，不要使用除“结论段引用”之外的引用格式。
+- 四段内容前后必须一致：若“结论”是观望/持有/减仓，则“触发与风控”不得给出无条件买入或加仓；需要反转时写成条件触发，并放入“失效条件”。
+
+你必须提供至少1条“前面专家没有提过”的新增判断或反证；禁止复述前文原句。
+若你总体结论与前文一致，必须补充新的数据依据或新的时间口径来支撑一致结论。
+
+请补充触发条件、风险与失效条件。
+总字数控制在180-360字；严禁编造数据，缺失数据请明确写“未获取到”。`, replyContent, query)
 	} else {
-		prompt += fmt.Sprintf(`你的分析任务: %s
+		prompt += fmt.Sprintf(`小韭菜问题: %s
 
-请用简洁专业的语言回答，控制在150字以内。`, query)
+请用简洁专业的语言回答。
+
+请按 Markdown 输出，严格使用以下结构（标题必须单独一行，顺序固定，每个标题只出现一次）：
+## 结论
+> 这里写结论（仅“结论”段允许使用引用格式）
+## 理由
+## 触发与风控
+## 失效条件
+
+格式约束（必须遵守）：
+- 不要输出“参考依据”区块，不要角标 [1][2]，不要原样堆砌工具字段名。
+- 不要使用代码块、行内代码、表格。
+- 不要输出任何列表编号或混合编号（禁止 1) / (1) / 1. / 一、）。
+- 小标题必须单独一行，不要把“标题：正文”写在同一行。
+- 重点只用 **加粗**，不要使用除“结论段引用”之外的引用格式。
+- 四段内容前后必须一致：若“结论”是观望/持有/减仓，则“触发与风控”不得给出无条件买入或加仓；需要反转时写成条件触发，并放入“失效条件”。
+
+请补充触发条件、风险与失效条件。
+总字数控制在180-360字；严禁编造数据，缺失数据请明确写“未获取到”。`, query)
 	}
 
 	return prompt
@@ -282,4 +410,45 @@ func (b *ExpertAgentBuilder) formatToolsInstruction(searchTools, dataTools, othe
 	result.WriteString("3. 工具返回结果后再组织回答\n")
 
 	return result.String()
+}
+
+func (b *ExpertAgentBuilder) requiresMarketCodeArguments(config *models.AgentConfig) bool {
+	if config == nil || len(config.Tools) == 0 {
+		return false
+	}
+	hasKline := false
+	hasRealtime := false
+	for _, name := range config.Tools {
+		switch name {
+		case "get_kline_data":
+			hasKline = true
+		case "get_stock_realtime":
+			hasRealtime = true
+		}
+	}
+	return hasKline || hasRealtime
+}
+
+func (b *ExpertAgentBuilder) hasTool(config *models.AgentConfig, name string) bool {
+	if config == nil || len(config.Tools) == 0 {
+		return false
+	}
+	for _, toolName := range config.Tools {
+		if toolName == name {
+			return true
+		}
+	}
+	return false
+}
+
+func preferredIndexCodeByStock(symbol string) string {
+	code := strings.ToLower(strings.TrimSpace(symbol))
+	switch {
+	case strings.HasPrefix(code, "sh"):
+		return "sh000001"
+	case strings.HasPrefix(code, "sz"), strings.HasPrefix(code, "bj"):
+		return "sz399001"
+	default:
+		return "sh000001"
+	}
 }

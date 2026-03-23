@@ -1,13 +1,22 @@
 import React, { useState, useEffect } from 'react';
-import { X, TrendingUp, RefreshCw, Calendar, ChevronDown } from 'lucide-react';
-import { GetLongHuBangList, GetLongHuBangDetail, GetTradeDates } from '../../wailsjs/go/main/App';
+import { X, TrendingUp, RefreshCw, Calendar } from 'lucide-react';
+import { GetLongHuBangList, GetLongHuBangDetail } from '../../wailsjs/go/main/App';
 import { models } from '../../wailsjs/go/models';
-import { useCandleColor } from '../contexts/CandleColorContext';
 
 interface LongHuBangDialogProps {
   isOpen: boolean;
   onClose: () => void;
 }
+
+// 获取默认交易日期：16点前用前一天，16点后用当天
+const getDefaultTradeDate = (): string => {
+  const now = new Date();
+  const hour = now.getHours();
+  if (hour < 16) {
+    now.setDate(now.getDate() - 1);
+  }
+  return now.toISOString().split('T')[0];
+};
 
 export const LongHuBangDialog: React.FC<LongHuBangDialogProps> = ({ isOpen, onClose }) => {
   const [items, setItems] = useState<models.LongHuBangItem[]>([]);
@@ -17,7 +26,6 @@ export const LongHuBangDialog: React.FC<LongHuBangDialogProps> = ({ isOpen, onCl
   const [details, setDetails] = useState<models.LongHuBangDetail[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [tradeDate, setTradeDate] = useState('');
-  const [tradeDates, setTradeDates] = useState<string[]>([]);
   const [pageNumber, setPageNumber] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const pageSize = 30;
@@ -50,24 +58,11 @@ export const LongHuBangDialog: React.FC<LongHuBangDialogProps> = ({ isOpen, onCl
 
   useEffect(() => {
     if (isOpen) {
-      // 先获取交易日列表
-      GetTradeDates(60).then((dates) => {
-        if (dates && dates.length > 0) {
-          // 使用北京时间判断，16点前从列表中排除今天
-          const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
-          const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-          const filtered = now.getHours() < 16
-            ? dates.filter(d => d !== todayStr)
-            : dates;
-          if (filtered.length === 0) return;
-          setTradeDates(filtered);
-          const defaultDate = filtered[0];
-          setTradeDate(defaultDate);
-          setPageNumber(1);
-          setHasMore(true);
-          loadList(1, defaultDate, false);
-        }
-      });
+      const defaultDate = getDefaultTradeDate();
+      setPageNumber(1);
+      setTradeDate(defaultDate);
+      setHasMore(true);
+      loadList(1, defaultDate, false);
       setSelectedItem(null);
       setDetails([]);
     }
@@ -93,13 +88,12 @@ export const LongHuBangDialog: React.FC<LongHuBangDialogProps> = ({ isOpen, onCl
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-[950px] h-[700px] fin-panel border fin-divider rounded-xl shadow-2xl flex flex-col overflow-hidden">
+      <div className="relative w-[1120px] h-[760px] max-w-[92vw] max-h-[88vh] fin-panel border fin-divider rounded-xl shadow-2xl flex flex-col overflow-hidden">
         <DialogHeader
           onClose={onClose}
           onRefresh={() => loadList(1, tradeDate, false)}
           loading={loading}
           tradeDate={tradeDate}
-          tradeDates={tradeDates}
           onDateChange={handleDateChange}
         />
         <div className="flex-1 flex overflow-hidden">
@@ -125,112 +119,38 @@ export const LongHuBangDialog: React.FC<LongHuBangDialogProps> = ({ isOpen, onCl
   );
 };
 
-// 日期选择下拉框组件
-const DatePicker: React.FC<{
-  value: string;
-  options: string[];
-  onChange: (date: string) => void;
-}> = ({ value, options, onChange }) => {
-  const [isOpen, setIsOpen] = useState(false);
-  const containerRef = React.useRef<HTMLDivElement>(null);
-
-  // 点击外部关闭
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isOpen]);
-
-  // 格式化日期显示 (2026-02-24 -> 02月24日 周二)
-  const formatDateDisplay = (dateStr: string) => {
-    const date = new Date(dateStr);
-    const weekDays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    return `${month}月${day}日 ${weekDays[date.getDay()]}`;
-  };
-
-  return (
-    <div ref={containerRef} className="relative">
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 px-3 py-1.5 rounded-lg fin-panel border fin-divider hover:border-accent/50 transition-colors"
-      >
-        <Calendar className="w-4 h-4 text-accent" />
-        <span className="text-sm fin-text-primary font-medium">
-          {formatDateDisplay(value)}
-        </span>
-        <ChevronDown className={`w-4 h-4 fin-text-tertiary transition-transform ${isOpen ? 'rotate-180' : ''}`} />
-      </button>
-
-      {isOpen && (
-        <div className="absolute right-0 top-full mt-2 w-56 max-h-80 overflow-y-auto fin-panel border fin-divider rounded-xl shadow-xl z-50 fin-scrollbar">
-          <div className="p-2">
-            {options.map((date, idx) => {
-              const isSelected = date === value;
-              const isToday = idx === 0;
-              return (
-                <button
-                  key={date}
-                  onClick={() => {
-                    onChange(date);
-                    setIsOpen(false);
-                  }}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-colors ${
-                    isSelected
-                      ? 'bg-accent/15 text-accent'
-                      : 'fin-text-primary hover:bg-slate-500/10'
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className={isSelected ? 'font-medium' : ''}>
-                      {formatDateDisplay(date)}
-                    </span>
-                    {isToday && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/20 text-accent">
-                        最新
-                      </span>
-                    )}
-                  </div>
-                  {isSelected && (
-                    <div className="w-1.5 h-1.5 rounded-full bg-accent" />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
 // 头部组件
 const DialogHeader: React.FC<{
   onClose: () => void;
   onRefresh: () => void;
   loading: boolean;
   tradeDate: string;
-  tradeDates: string[];
   onDateChange: (date: string) => void;
-}> = ({ onClose, onRefresh, loading, tradeDate, tradeDates, onDateChange }) => (
+}> = ({ onClose, onRefresh, loading, tradeDate, onDateChange }) => (
   <div className="flex items-center justify-between px-5 py-4 border-b fin-divider">
     <div className="flex items-center gap-3">
       <TrendingUp className="w-5 h-5 text-red-500" />
       <h2 className="text-lg font-semibold fin-text-primary">龙虎榜</h2>
     </div>
     <div className="flex items-center gap-3">
-      <DatePicker
-        value={tradeDate}
-        options={tradeDates}
-        onChange={onDateChange}
-      />
+      <div className="flex items-center gap-2">
+        <Calendar className="w-4 h-4 fin-text-tertiary" />
+        <input
+          type="date"
+          value={tradeDate}
+          onChange={(e) => onDateChange(e.target.value)}
+          className="px-2 py-1 text-sm rounded-lg fin-panel border fin-divider fin-text-primary bg-transparent focus:outline-none focus:ring-1 focus:ring-accent"
+          max={new Date().toISOString().split('T')[0]}
+        />
+        {tradeDate && (
+          <button
+            onClick={() => onDateChange('')}
+            className="text-xs fin-text-tertiary hover:fin-text-secondary"
+          >
+            清除
+          </button>
+        )}
+      </div>
       <button
         onClick={onRefresh}
         disabled={loading}
@@ -257,7 +177,6 @@ const ItemList: React.FC<{
   setDetailLoading: (loading: boolean) => void;
   onLoadMore: () => void;
 }> = ({ items, loading, loadingMore, hasMore, selectedItem, onSelect, setDetails, setDetailLoading, onLoadMore }) => {
-  const cc = useCandleColor();
   const listRef = React.useRef<HTMLDivElement>(null);
 
   // 滚动到底部时加载更多
@@ -308,7 +227,7 @@ const ItemList: React.FC<{
           className={`px-4 py-3 border-b fin-divider cursor-pointer transition-all ${
             selectedItem?.code === item.code && selectedItem?.tradeDate === item.tradeDate
               ? 'bg-accent/10 border-l-2 border-l-accent'
-              : 'fin-list-hover border-l-2 border-l-transparent'
+              : 'hover:bg-slate-500/5 border-l-2 border-l-transparent'
           }`}
         >
           <div className="flex items-center justify-between mb-1.5">
@@ -316,13 +235,13 @@ const ItemList: React.FC<{
               <span className="font-medium fin-text-primary">{item.name}</span>
               <span className="text-xs fin-text-tertiary font-mono">{item.code}</span>
             </div>
-            <span className={`text-sm font-mono font-medium ${cc.getColorClass(item.changePercent >= 0)}`}>
+            <span className={`text-sm font-mono font-medium ${item.changePercent >= 0 ? 'text-red-500' : 'text-green-500'}`}>
               {item.changePercent >= 0 ? '+' : ''}{item.changePercent.toFixed(2)}%
             </span>
           </div>
           <div className="flex items-center justify-between text-xs">
             <span className="fin-text-tertiary">{item.tradeDate}</span>
-            <span className={`font-mono ${cc.getColorClass(item.netBuyAmt >= 0)}`}>
+            <span className={`font-mono ${item.netBuyAmt >= 0 ? 'text-red-400' : 'text-green-400'}`}>
               净买入 {formatAmount(item.netBuyAmt)}
             </span>
           </div>
@@ -351,7 +270,6 @@ const BrokerRow: React.FC<{
   type: 'buy' | 'sell';
   formatAmount: (amt: number) => string;
 }> = ({ index, detail, type, formatAmount }) => {
-  const cc = useCandleColor();
   const amt = type === 'buy' ? detail.buyAmt : detail.sellAmt;
   const percent = type === 'buy' ? detail.buyPercent : detail.sellPercent;
 
@@ -359,7 +277,7 @@ const BrokerRow: React.FC<{
     <div className="flex items-center text-sm px-2 py-2 rounded hover:bg-slate-500/5 transition-colors">
       <span className="w-5 text-xs fin-text-tertiary">{index + 1}</span>
       <span className="flex-1 truncate fin-text-primary text-xs">{detail.operName}</span>
-      <span className={`w-20 text-right font-mono ${type === 'buy' ? cc.upClass : cc.downClass}`}>
+      <span className={`w-20 text-right font-mono ${type === 'buy' ? 'text-red-400' : 'text-green-400'}`}>
         {formatAmount(amt)}
       </span>
       <span className="w-16 text-right text-xs fin-text-tertiary">
@@ -375,16 +293,11 @@ const BrokerSection: React.FC<{
   details: models.LongHuBangDetail[];
   type: 'buy' | 'sell';
   formatAmount: (amt: number) => string;
-}> = ({ title, details, type, formatAmount }) => {
-  const cc = useCandleColor();
-  const colorCls = type === 'buy' ? cc.upClass : cc.downClass;
-  const bgCls = type === 'buy' ? (cc.mode === 'red-up' ? 'bg-red-500' : 'bg-green-500') : (cc.mode === 'red-up' ? 'bg-green-500' : 'bg-red-500');
-  const borderCls = type === 'buy' ? (cc.mode === 'red-up' ? 'border-red-500/20' : 'border-green-500/20') : (cc.mode === 'red-up' ? 'border-green-500/20' : 'border-red-500/20');
-  return (
+}> = ({ title, details, type, formatAmount }) => (
   <div className="mb-5">
-    <div className={`flex items-center gap-2 mb-3 pb-2 border-b ${borderCls}`}>
-      <div className={`w-1 h-4 rounded ${bgCls}`} />
-      <h3 className={`text-sm font-medium ${colorCls}`}>
+    <div className={`flex items-center gap-2 mb-3 pb-2 border-b ${type === 'buy' ? 'border-red-500/20' : 'border-green-500/20'}`}>
+      <div className={`w-1 h-4 rounded ${type === 'buy' ? 'bg-red-500' : 'bg-green-500'}`} />
+      <h3 className={`text-sm font-medium ${type === 'buy' ? 'text-red-500' : 'text-green-500'}`}>
         {title}
       </h3>
     </div>
@@ -399,7 +312,6 @@ const BrokerSection: React.FC<{
     )}
   </div>
 );
-};
 
 // 统计卡片组件
 const StatCard: React.FC<{
@@ -417,24 +329,22 @@ const StatCard: React.FC<{
 const StockHeader: React.FC<{
   item: models.LongHuBangItem;
   formatAmount: (amt: number) => string;
-}> = ({ item, formatAmount }) => {
-  const cc = useCandleColor();
-  return (
+}> = ({ item, formatAmount }) => (
   <div className="mb-5">
     <div className="flex items-baseline gap-3 mb-4">
       <span className="text-2xl font-bold fin-text-primary">{item.name}</span>
       <span className="text-sm fin-text-tertiary font-mono">{item.code}</span>
-      <span className={`text-lg font-mono font-semibold ml-auto ${cc.getColorClass(item.changePercent >= 0)}`}>
+      <span className={`text-lg font-mono font-semibold ml-auto ${item.changePercent >= 0 ? 'text-red-500' : 'text-green-500'}`}>
         {item.changePercent >= 0 ? '+' : ''}{item.changePercent.toFixed(2)}%
       </span>
     </div>
     <div className="grid grid-cols-2 gap-3">
       <StatCard label="收盘价" value={item.closePrice.toFixed(2)} />
       <StatCard label="换手率" value={`${item.turnoverRate.toFixed(2)}%`} />
-      <StatCard label="净买入" value={formatAmount(item.netBuyAmt)} valueClass={cc.upClass} />
+      <StatCard label="净买入" value={formatAmount(item.netBuyAmt)} valueClass="text-red-500" />
       <StatCard label="成交占比" value={`${item.dealRatio.toFixed(2)}%`} />
-      <StatCard label="买入额" value={formatAmount(item.buyAmt)} valueClass={cc.upClass} />
-      <StatCard label="卖出额" value={formatAmount(item.sellAmt)} valueClass={cc.downClass} />
+      <StatCard label="买入额" value={formatAmount(item.buyAmt)} valueClass="text-red-400" />
+      <StatCard label="卖出额" value={formatAmount(item.sellAmt)} valueClass="text-green-400" />
     </div>
     <div className="mt-3 px-3 py-2 rounded-lg bg-slate-500/5">
       <span className="text-xs fin-text-tertiary">上榜原因: </span>
@@ -442,7 +352,6 @@ const StockHeader: React.FC<{
     </div>
   </div>
 );
-};
 
 // 详情面板组件
 const DetailPanel: React.FC<{
@@ -477,7 +386,7 @@ const DetailPanel: React.FC<{
   const sellDetails = details.filter(d => d.direction === 'sell');
 
   return (
-    <div className="flex-1 overflow-y-auto p-4 fin-scrollbar text-left">
+    <div className="flex-1 overflow-y-auto p-4 fin-scrollbar">
       <StockHeader item={item} formatAmount={formatAmount} />
       <BrokerSection title="买入前五营业部" details={buyDetails} type="buy" formatAmount={formatAmount} />
       <BrokerSection title="卖出前五营业部" details={sellDetails} type="sell" formatAmount={formatAmount} />

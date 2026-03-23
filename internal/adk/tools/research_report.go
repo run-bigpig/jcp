@@ -9,9 +9,14 @@ import (
 
 // GetResearchReportInput 研报查询输入参数
 type GetResearchReportInput struct {
-	Code     string `json:"code" jsonschema:"股票代码，如 sz000001 或 000001"`
-	PageSize int    `json:"pageSize,omitzero" jsonschema:"每页数量，默认10"`
-	PageNo   int    `json:"pageNo,omitzero" jsonschema:"页码，默认1"`
+	Code         string `json:"code,omitempty" jsonschema:"股票代码，如 sz000001 或 000001"`
+	Symbol       string `json:"symbol,omitempty" jsonschema:"兼容字段：股票代码"`
+	StockCode    string `json:"stockCode,omitempty" jsonschema:"兼容字段：股票代码"`
+	Ticker       string `json:"ticker,omitempty" jsonschema:"兼容字段：股票代码"`
+	SecurityCode string `json:"securityCode,omitempty" jsonschema:"兼容字段：股票代码"`
+	SecuCode     string `json:"secuCode,omitempty" jsonschema:"兼容字段：股票代码"`
+	PageSize     int    `json:"pageSize,omitzero" jsonschema:"每页数量，默认10"`
+	PageNo       int    `json:"pageNo,omitzero" jsonschema:"页码，默认1"`
 }
 
 // GetResearchReportOutput 研报查询输出
@@ -23,10 +28,19 @@ type GetResearchReportOutput struct {
 // createResearchReportTool 创建研报查询工具
 func (r *Registry) createResearchReportTool() (tool.Tool, error) {
 	handler := func(ctx tool.Context, input GetResearchReportInput) (GetResearchReportOutput, error) {
+		code := resolveStockCodeFromCandidates(
+			ctx,
+			input.Code,
+			input.Symbol,
+			input.StockCode,
+			input.Ticker,
+			input.SecurityCode,
+			input.SecuCode,
+		)
 		fmt.Printf("[Tool:get_research_report] 调用开始, code=%s, pageSize=%d, pageNo=%d\n",
-			input.Code, input.PageSize, input.PageNo)
+			code, input.PageSize, input.PageNo)
 
-		if input.Code == "" {
+		if code == "" {
 			fmt.Println("[Tool:get_research_report] 错误: 未提供股票代码")
 			return GetResearchReportOutput{Data: "请提供股票代码"}, nil
 		}
@@ -40,7 +54,7 @@ func (r *Registry) createResearchReportTool() (tool.Tool, error) {
 			pageNo = 1
 		}
 
-		result, err := r.researchReportService.GetResearchReports(input.Code, pageSize, pageNo)
+		result, err := r.researchReportService.GetResearchReports(code, pageSize, pageNo)
 		if err != nil {
 			fmt.Printf("[Tool:get_research_report] 错误: %v\n", err)
 			return GetResearchReportOutput{}, err

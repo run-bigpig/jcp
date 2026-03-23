@@ -63,7 +63,6 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	chatReq := meeting.ChatRequest{
-		StockCode: req.StockCode,
 		Stock:     *stock,
 		Agents:    agents,
 		AllAgents: agents,
@@ -73,7 +72,13 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	summary, err := s.meetingService.RunSmartMeetingSync(ctx, aiConfig, chatReq)
+	// 使用现有的 RunSmartMeetingWithCallback 方法
+	var summary string
+	_, err = s.meetingService.RunSmartMeetingWithCallback(ctx, aiConfig, chatReq, func(resp meeting.ChatResponse) {
+		if resp.MsgType == "summary" {
+			summary = resp.Content
+		}
+	}, nil)
 	if err != nil {
 		log.Error("分析失败: %v", err)
 		writeJSON(w, http.StatusInternalServerError, AnalyzeResponse{Error: err.Error()})

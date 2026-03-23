@@ -27,6 +27,7 @@ export interface KLineData {
   low: number;
   close: number;
   volume: number;
+  amount?: number;
   avg?: number; // For intraday average price line
   // 均线数据
   ma5?: number;
@@ -119,4 +120,195 @@ export interface MarketStatus {
   statusText: string;    // 中文状态描述
   isTradeDay: boolean;   // 是否交易日
   holidayName: string;   // 节假日名称
+}
+
+export interface StockPeer {
+  symbol: string;
+  name: string;
+  market?: string;
+}
+
+export interface FinancialStatements {
+  income?: Record<string, any>[];
+  balance?: Record<string, any>[];
+  cashflow?: Record<string, any>[];
+}
+
+export interface PerformanceEvents {
+  forecast?: Record<string, any>[];
+  express?: Record<string, any>[];
+  schedule?: Record<string, any>[];
+}
+
+export interface FundFlowSeries {
+  fields?: string[];
+  lines?: string[][];
+  labels?: Record<string, string>;
+  latest?: Record<string, any>;
+}
+
+export interface InstitutionalHoldings {
+  topHolders?: Record<string, any>[];
+  controller?: Record<string, any>;
+}
+
+export interface IndustryCompare {
+  industry?: string;
+  peers?: StockPeer[];
+}
+
+export interface BonusFinancing {
+  dividend?: Record<string, any>[];
+  annual?: Record<string, any>[];
+  financing?: Record<string, any>[];
+  allotment?: Record<string, any>[];
+}
+
+export interface BusinessAnalysis {
+  scope?: Record<string, any>[];
+  composition?: Record<string, any>[];
+  review?: Record<string, any>[];
+}
+
+export interface ShareholderNumbers {
+  records?: Record<string, any>[];
+  latest?: Record<string, any>;
+}
+
+export interface EquityPledge {
+  records?: Record<string, any>[];
+  latest?: Record<string, any>;
+}
+
+export interface LockupRelease {
+  records?: Record<string, any>[];
+  latest?: Record<string, any>;
+}
+
+export interface ShareholderChanges {
+  records?: Record<string, any>[];
+  latest?: Record<string, any>;
+}
+
+export interface StockBuyback {
+  records?: Record<string, any>[];
+  latest?: Record<string, any>;
+}
+
+export interface F10OperationsRequired {
+  latestIndicators?: Record<string, any>;
+  latestIndicatorsExtra?: Record<string, any>;
+  latestIndicatorsQuote?: Record<string, any>;
+  eventReminders?: Record<string, any>[];
+  news?: Record<string, any>[];
+  announcements?: Record<string, any>[];
+  shareholderAnalysis?: Record<string, any>[];
+  dragonTigerList?: Record<string, any>[];
+  blockTrades?: Record<string, any>[];
+  marginTrading?: Record<string, any>[];
+  mainIndicators?: Record<string, any>[];
+  sectorTags?: Record<string, any>[];
+  coreThemes?: Record<string, any>[];
+  institutionForecast?: Record<string, any>[];
+  forecastChart?: Record<string, any>[];
+  reportSummary?: Record<string, any>[];
+  researchReports?: Record<string, any>[];
+  forecastRevisionTrack?: Record<string, any>[];
+}
+
+export interface F10Management {
+  managementList?: Record<string, any>[];
+  salaryDetails?: Record<string, any>[];
+  holdingChanges?: Record<string, any>[];
+}
+
+export interface F10CapitalOperation {
+  raiseSources?: Record<string, any>[];
+  projectProgress?: Record<string, any>[];
+}
+
+export interface F10EquityStructure {
+  latest?: Record<string, any>[];
+  history?: Record<string, any>[];
+  composition?: Record<string, any>[];
+}
+
+export interface F10RelatedStocks {
+  industryRankings?: Record<string, any>[];
+  conceptRelations?: Record<string, any>[];
+}
+
+export interface F10CoreThemes {
+  boardTypes?: Record<string, any>[];
+  themes?: Record<string, any>[];
+  history?: Record<string, any>[];
+  selectedBoardReasons?: Record<string, any>[];
+  popularLeaders?: Record<string, any>[];
+}
+
+export interface F10IndustryCompareMetrics {
+  valuation?: Record<string, any>[];
+  performance?: Record<string, any>[];
+  growth?: Record<string, any>[];
+}
+
+export interface F10MainIndicators {
+  latest?: Record<string, any>[];
+  yearly?: Record<string, any>[];
+  quarterly?: Record<string, any>[];
+}
+
+export interface F10ValuationTrend {
+  source?: string;
+  range?: string;
+  requestedRange?: string;
+  fallback?: boolean;
+  dateType?: number;
+  labels?: Record<string, string>;
+  pe?: Record<string, any>[];
+  pb?: Record<string, any>[];
+  ps?: Record<string, any>[];
+  pcf?: Record<string, any>[];
+}
+
+export interface StockValuation {
+  price?: number;
+  peTtm?: number;
+  pb?: number;
+  totalMarketCap?: number;
+  floatMarketCap?: number;
+  turnoverRate?: number;
+  amplitude?: number;
+  totalShares?: number;
+  floatShares?: number;
+}
+
+export interface F10Overview {
+  code: string;
+  updatedAt?: string;
+  source?: string;
+  company?: Record<string, any>;
+  financials?: FinancialStatements;
+  performance?: PerformanceEvents;
+  fundFlow?: FundFlowSeries;
+  institutions?: InstitutionalHoldings;
+  industry?: IndustryCompare;
+  bonus?: BonusFinancing;
+  business?: BusinessAnalysis;
+  shareholders?: ShareholderNumbers;
+  pledge?: EquityPledge;
+  lockup?: LockupRelease;
+  holderChange?: ShareholderChanges;
+  buyback?: StockBuyback;
+  valuation?: StockValuation;
+  operations?: F10OperationsRequired;
+  coreThemes?: F10CoreThemes;
+  industryMetrics?: F10IndustryCompareMetrics;
+  mainIndicators?: F10MainIndicators;
+  management?: F10Management;
+  capitalOperation?: F10CapitalOperation;
+  equityStructure?: F10EquityStructure;
+  relatedStocks?: F10RelatedStocks;
+  valuationTrend?: F10ValuationTrend;
+  errors?: Record<string, string>;
 }

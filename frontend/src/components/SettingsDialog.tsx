@@ -1,13 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { X, Cpu, ChevronLeft, Plug, Plus, Trash2, Wrench, Check, Loader2, Brain, RefreshCw, Download, RotateCcw, Globe, Layers, Sliders, Star, MessageSquare, Copy, Sparkles } from 'lucide-react';
+import { X, Cpu, ChevronLeft, Plug, Plus, Trash2, Wrench, Check, Loader2, Brain, Globe, Layers, Sliders, Star, MessageSquare, Copy, Sparkles } from 'lucide-react';
 import { getConfig, updateConfig, getAvailableTools, ToolInfo, testAIConnection } from '../services/configService';
 import { getAgentConfigs } from '../services/strategyService';
 import { getMCPServers, MCPServerConfig, MCPServerStatus, testMCPConnection, getMCPServerTools, MCPToolInfo } from '../services/mcpService';
-import { checkForUpdate, doUpdate, restartApp, getCurrentVersion, onUpdateProgress, UpdateInfo, UpdateProgress } from '../services/updateService';
 import { getStrategies, getActiveStrategyID, setActiveStrategy, deleteStrategy, generateStrategy, updateStrategy, enhancePrompt, Strategy, StrategyAgent } from '../services/strategyService';
 import { useTheme } from '../contexts/ThemeContext';
-import { useCandleColor, CandleColorMode } from '../contexts/CandleColorContext';
-import { useIndicator, IndicatorConfig, IndicatorType, DEFAULT_INDICATORS } from '../contexts/IndicatorContext';
 
 interface AIConfig {
   id: string;
@@ -46,14 +43,9 @@ interface ProxyConfig {
   customUrl: string;
 }
 
-// OpenClaw 配置接口
-interface OpenClawConfig {
-  enabled: boolean;
-  port: number;
-  apiKey: string;
-}
+type AgentSelectionStyle = 'balanced' | 'conservative' | 'aggressive';
 
-type TabType = 'provider' | 'intent' | 'strategy' | 'mcp' | 'memory' | 'chart' | 'proxy' | 'openclaw' | 'update';
+type TabType = 'provider' | 'intent' | 'strategy' | 'mcp' | 'memory' | 'proxy';
 
 interface SettingsDialogProps {
   isOpen: boolean;
@@ -104,15 +96,14 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose 
     mode: 'none',
     customUrl: '',
   });
-  const [openClawConfig, setOpenClawConfig] = useState<OpenClawConfig>({
-    enabled: false,
-    port: 51888,
-    apiKey: '',
-  });
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [activeStrategyId, setActiveStrategyId] = useState<string>('');
   const [moderatorAiId, setModeratorAiId] = useState<string>('');
   const [strategyAiId, setStrategyAiId] = useState<string>('');
+  const [aiRetryCount, setAiRetryCount] = useState<number>(3);
+  const [verboseAgentIO, setVerboseAgentIO] = useState<boolean>(true);
+  const [agentSelectionStyle, setAgentSelectionStyle] = useState<AgentSelectionStyle>('balanced');
+  const [enableSecondReview, setEnableSecondReview] = useState<boolean>(true);
 
   // Toast 通知
   const { toast, showToast, hideToast } = useSettingsToast();
@@ -129,17 +120,18 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose 
     const mcps = await getMCPServers();
     setMcpServers(mcps || []);
     if (config.memory) setMemoryConfig(config.memory);
+    if (typeof config.aiRetryCount === 'number') setAiRetryCount(config.aiRetryCount);
+    if (typeof (config as any).verboseAgentIO === 'boolean') setVerboseAgentIO((config as any).verboseAgentIO);
+    if (typeof (config as any).agentSelectionStyle === 'string') {
+      setAgentSelectionStyle((config as any).agentSelectionStyle as AgentSelectionStyle);
+    }
+    if (typeof (config as any).enableSecondReview === 'boolean') {
+      setEnableSecondReview((config as any).enableSecondReview);
+    }
     if (config.proxy) {
       setProxyConfig({
         mode: config.proxy.mode as ProxyMode,
         customUrl: config.proxy.customUrl || '',
-      });
-    }
-    if (config.openClaw) {
-      setOpenClawConfig({
-        enabled: config.openClaw.enabled || false,
-        port: config.openClaw.port || 8080,
-        apiKey: config.openClaw.apiKey || '',
       });
     }
     if (config.moderatorAiId) setModeratorAiId(config.moderatorAiId);
@@ -174,7 +166,10 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose 
     proxy: ProxyConfig;
     moderatorAiId: string;
     strategyAiId: string;
-    indicators: any;
+    aiRetryCount: number;
+    verboseAgentIO: boolean;
+    agentSelectionStyle: AgentSelectionStyle;
+    enableSecondReview: boolean;
   }>>({});
 
   // 实际执行保存的函数
@@ -205,11 +200,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose 
     mcpServers: MCPServerConfig[];
     memory: MemoryConfig;
     proxy: ProxyConfig;
-    openClaw: OpenClawConfig;
     moderatorAiId: string;
     strategyAiId: string;
-    candleColorMode: string;
-    indicators: any;
+    aiRetryCount: number;
+    verboseAgentIO: boolean;
+    agentSelectionStyle: AgentSelectionStyle;
+    enableSecondReview: boolean;
   }>) => {
     // 合并待保存的更新
     pendingUpdatesRef.current = { ...pendingUpdatesRef.current, ...updates };
@@ -244,17 +240,14 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose 
     { id: 'strategy', label: '策略管理', icon: <Layers className="h-4 w-4" /> },
     { id: 'mcp', label: 'MCP服务', icon: <Plug className="h-4 w-4" /> },
     { id: 'memory', label: '记忆管理', icon: <Brain className="h-4 w-4" /> },
-    { id: 'chart', label: '图表设置', icon: <Sliders className="h-4 w-4" /> },
     { id: 'proxy', label: '网络代理', icon: <Globe className="h-4 w-4" /> },
-    { id: 'openclaw', label: 'OpenClaw', icon: <Plug className="h-4 w-4" /> },
-    { id: 'update', label: '软件更新', icon: <RefreshCw className="h-4 w-4" /> },
   ];
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 backdrop-blur-sm">
-      <div className="fin-panel border fin-divider rounded-xl w-[720px] max-h-[85vh] overflow-hidden shadow-2xl">
+      <div className="fin-panel border fin-divider rounded-xl w-[1120px] h-[760px] max-w-[92vw] max-h-[88vh] overflow-hidden shadow-2xl flex flex-col">
         <Header onClose={onClose} />
-        <div className="flex h-[500px]">
+        <div className="flex-1 min-h-0 flex">
           {/* 左侧选项卡 */}
           <div className="w-44 fin-panel-strong border-r fin-divider p-2">
             {tabs.map(tab => (
@@ -273,7 +266,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose 
             ))}
           </div>
           {/* 右侧内容 */}
-          <div className="flex-1 overflow-y-auto p-4 fin-scrollbar text-left">
+          <div className="flex-1 overflow-y-auto p-4 fin-scrollbar">
             {activeTab === 'provider' && (
               <ProviderSettings
                 configs={aiConfigs}
@@ -285,15 +278,35 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose 
                 strategyAiId={strategyAiId}
                 strategies={strategies}
                 memoryAiId={memoryConfig.aiConfigId}
+                aiRetryCount={aiRetryCount}
+                verboseAgentIO={verboseAgentIO}
+                onRetryCountChange={(count) => {
+                  setAiRetryCount(count);
+                  saveConfig({ aiRetryCount: count });
+                }}
+                onVerboseAgentIOChange={(enabled) => {
+                  setVerboseAgentIO(enabled);
+                  saveConfig({ verboseAgentIO: enabled });
+                }}
               />
             )}
             {activeTab === 'intent' && (
               <IntentSettings
                 configs={aiConfigs}
                 moderatorAiId={moderatorAiId}
+                agentSelectionStyle={agentSelectionStyle}
                 onModeratorAiIdChange={(id) => {
                   setModeratorAiId(id);
                   saveConfig({ moderatorAiId: id });
+                }}
+                onAgentSelectionStyleChange={(style) => {
+                  setAgentSelectionStyle(style);
+                  saveConfig({ agentSelectionStyle: style });
+                }}
+                enableSecondReview={enableSecondReview}
+                onEnableSecondReviewChange={(enabled) => {
+                  setEnableSecondReview(enabled);
+                  saveConfig({ enableSecondReview: enabled });
                 }}
               />
             )}
@@ -348,9 +361,6 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose 
                 }}
               />
             )}
-            {activeTab === 'chart' && (
-              <ChartSettings saveConfig={saveConfig} />
-            )}
             {activeTab === 'proxy' && (
               <ProxySettings
                 config={proxyConfig}
@@ -359,18 +369,6 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose 
                   saveConfig({ proxy: config });
                 }}
               />
-            )}
-            {activeTab === 'openclaw' && (
-              <OpenClawSettings
-                config={openClawConfig}
-                onChange={(config) => {
-                  setOpenClawConfig(config);
-                  saveConfig({ openClaw: config });
-                }}
-              />
-            )}
-            {activeTab === 'update' && (
-              <UpdateSettings />
             )}
           </div>
         </div>
@@ -408,14 +406,13 @@ const Header: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 };
 
 // ========== Provider 设置选项卡 ==========
-const PROVIDERS = ['openai', 'gemini', 'vertexai', 'anthropic'] as const;
+const PROVIDERS = ['openai', 'gemini', 'vertexai'] as const;
 type ProviderType = typeof PROVIDERS[number];
 
 const PROVIDER_LABELS: Record<ProviderType, string> = {
   openai: 'OpenAI',
   gemini: 'Gemini',
   vertexai: 'Vertex AI',
-  anthropic: 'Anthropic',
 };
 
 interface ProviderSettingsProps {
@@ -425,12 +422,27 @@ interface ProviderSettingsProps {
   strategyAiId: string;
   strategies: Strategy[];
   memoryAiId: string;
+  aiRetryCount: number;
+  verboseAgentIO: boolean;
+  onRetryCountChange: (count: number) => void;
+  onVerboseAgentIOChange: (enabled: boolean) => void;
 }
 
 // 视图类型
 type ProviderView = 'list' | 'edit';
 
-const ProviderSettings: React.FC<ProviderSettingsProps> = ({ configs, onChange, moderatorAiId, strategyAiId, strategies, memoryAiId }) => {
+const ProviderSettings: React.FC<ProviderSettingsProps> = ({
+  configs,
+  onChange,
+  moderatorAiId,
+  strategyAiId,
+  strategies,
+  memoryAiId,
+  aiRetryCount,
+  verboseAgentIO,
+  onRetryCountChange,
+  onVerboseAgentIOChange,
+}) => {
   const [view, setView] = useState<ProviderView>('list');
   const [selectedConfig, setSelectedConfig] = useState<AIConfig | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -544,6 +556,10 @@ const ProviderSettings: React.FC<ProviderSettingsProps> = ({ configs, onChange, 
       onConfirmAdd={handleAddConfig}
       onCancelAdd={() => setShowAddModal(false)}
       getDeleteDisabledReason={getDeleteDisabledReason}
+      aiRetryCount={aiRetryCount}
+      verboseAgentIO={verboseAgentIO}
+      onRetryCountChange={onRetryCountChange}
+      onVerboseAgentIOChange={onVerboseAgentIOChange}
     />
   );
 };
@@ -562,14 +578,19 @@ interface ProviderListViewProps {
   onConfirmAdd: () => void;
   onCancelAdd: () => void;
   getDeleteDisabledReason: (id: string) => string | undefined;
+  aiRetryCount: number;
+  verboseAgentIO: boolean;
+  onRetryCountChange: (count: number) => void;
+  onVerboseAgentIOChange: (enabled: boolean) => void;
 }
 
 const ProviderListView: React.FC<ProviderListViewProps> = ({
   configs, onSelect, onSetDefault, onDelete, onCopy, onAdd,
-  showAddModal, newProviderType, onSelectType, onConfirmAdd, onCancelAdd, getDeleteDisabledReason
+  showAddModal, newProviderType, onSelectType, onConfirmAdd, onCancelAdd, getDeleteDisabledReason, aiRetryCount, verboseAgentIO, onRetryCountChange, onVerboseAgentIOChange
 }) => {
   const { colors } = useTheme();
   const defaultCount = configs.filter(c => c.isDefault).length;
+  const currentDefaultId = configs.find(c => c.isDefault)?.id || '';
 
   return (
     <div className="space-y-4">
@@ -588,6 +609,67 @@ const ProviderListView: React.FC<ProviderListViewProps> = ({
           <Plus className="h-3.5 w-3.5" />
           添加
         </button>
+      </div>
+
+      {/* 全局 AI 设置 */}
+      <div className="fin-panel border fin-divider rounded-lg p-3">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div>
+            <div className={`text-sm font-medium ${colors.isDark ? 'text-white' : 'text-slate-800'}`}>默认模型</div>
+            <div className={`text-xs mt-1 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>聊天与未单独指定的 Agent 默认使用该配置</div>
+          </div>
+          <select
+            value={currentDefaultId}
+            onChange={(e) => {
+              if (e.target.value) onSetDefault(e.target.value);
+            }}
+            className={`fin-input rounded-lg px-2 py-1 text-sm min-w-[200px] ${colors.isDark ? 'text-white' : 'text-slate-800'}`}
+          >
+            {configs.length === 0 ? (
+              <option value="">暂无配置</option>
+            ) : (
+              configs.map(config => (
+                <option key={config.id} value={config.id}>
+                  {config.name} ({config.modelName})
+                </option>
+              ))
+            )}
+          </select>
+        </div>
+
+        <div className="h-px fin-divider my-2" />
+
+        <div className="flex items-center justify-between gap-3 mt-3">
+          <div>
+            <div className={`text-sm font-medium ${colors.isDark ? 'text-white' : 'text-slate-800'}`}>AI 请求重试</div>
+            <div className={`text-xs mt-1 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>请求失败时自动重试次数（1-5）</div>
+          </div>
+          <select
+            value={aiRetryCount}
+            onChange={(e) => onRetryCountChange(Number(e.target.value))}
+            className={`fin-input rounded-lg px-2 py-1 text-sm ${colors.isDark ? 'text-white' : 'text-slate-800'}`}
+          >
+            {[1, 2, 3, 4, 5].map(count => (
+              <option key={count} value={count}>{count} 次</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="h-px fin-divider my-2" />
+
+        <div className="flex items-center justify-between gap-3 mt-3">
+          <div>
+            <div className={`text-sm font-medium ${colors.isDark ? 'text-white' : 'text-slate-800'}`}>完整 Agent 日志</div>
+            <div className={`text-xs mt-1 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>输出每个 Agent 的完整请求、工具参数、工具结果和最终回复</div>
+          </div>
+          <button
+            onClick={() => onVerboseAgentIOChange(!verboseAgentIO)}
+            className={`w-11 h-6 rounded-full transition-colors ${verboseAgentIO ? 'bg-accent' : (colors.isDark ? 'bg-slate-600' : 'bg-slate-400')}`}
+            title={verboseAgentIO ? '已开启' : '已关闭'}
+          >
+            <div className={`w-5 h-5 bg-white rounded-full shadow transition-transform ${verboseAgentIO ? 'translate-x-5' : 'translate-x-0.5'}`} />
+          </button>
+        </div>
       </div>
 
       {/* 配置列表 */}
@@ -647,7 +729,7 @@ const AddAIConfigModal: React.FC<AddAIConfigModalProps> = ({ selectedType, onSel
               <button
                 key={p}
                 onClick={() => onSelectType(p)}
-                className={`flex-1 px-2 py-2 text-sm rounded-lg transition-all whitespace-nowrap ${
+                className={`flex-1 px-3 py-2 text-sm rounded-lg transition-all ${
                   selectedType === p
                     ? 'bg-gradient-to-br from-[var(--accent)] to-[var(--accent-2)] text-white'
                     : (colors.isDark ? 'fin-panel border fin-divider text-slate-400 hover:text-white' : 'fin-panel border fin-divider text-slate-500 hover:text-slate-800')
@@ -905,18 +987,35 @@ const ProviderEditView: React.FC<ProviderEditViewProps> = ({
           <label className={`block text-sm mb-1.5 ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>最大输出 Token</label>
           <input
             type="number"
-            min="0"
+            min="256"
             max="128000"
             step="256"
             value={config.maxTokens}
-            onChange={e => {
-              const val = parseInt(e.target.value);
-              onChange({ ...config, maxTokens: isNaN(val) ? 0 : val });
-            }}
+            onChange={e => onChange({ ...config, maxTokens: parseInt(e.target.value) || 2048 })}
             className={`w-full fin-input rounded-lg px-3 py-2 text-sm ${colors.isDark ? 'text-white' : 'text-slate-800'}`}
             placeholder="2048"
           />
-          <p className={`text-xs mt-1 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>建议值：2048-8192，最大取决于模型,设置为0时表示不传递这个参数</p>
+          <p className={`text-xs mt-1 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>建议值：2048-8192，最大取决于模型</p>
+        </div>
+
+        {/* 请求超时配置 */}
+        <div>
+          <label className={`block text-sm mb-1.5 ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>请求超时（秒）</label>
+          <input
+            type="number"
+            min="5"
+            max="3600"
+            step="5"
+            value={config.timeout || 60}
+            onChange={e => {
+              const next = parseInt(e.target.value, 10);
+              const timeout = Number.isFinite(next) ? Math.min(3600, Math.max(5, next)) : 60;
+              onChange({ ...config, timeout });
+            }}
+            className={`w-full fin-input rounded-lg px-3 py-2 text-sm ${colors.isDark ? 'text-white' : 'text-slate-800'}`}
+            placeholder="60"
+          />
+          <p className={`text-xs mt-1 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>用于单次模型请求；会议中的 Agent 超时会按该值动态放宽。</p>
         </div>
 
       </div>
@@ -943,10 +1042,22 @@ const ToggleSwitch: React.FC<{ checked: boolean; onChange: (v: boolean) => void 
 interface IntentSettingsProps {
   configs: AIConfig[];
   moderatorAiId: string;
+  agentSelectionStyle: AgentSelectionStyle;
+  enableSecondReview: boolean;
   onModeratorAiIdChange: (id: string) => void;
+  onAgentSelectionStyleChange: (style: AgentSelectionStyle) => void;
+  onEnableSecondReviewChange: (enabled: boolean) => void;
 }
 
-const IntentSettings: React.FC<IntentSettingsProps> = ({ configs, moderatorAiId, onModeratorAiIdChange }) => {
+const IntentSettings: React.FC<IntentSettingsProps> = ({
+  configs,
+  moderatorAiId,
+  agentSelectionStyle,
+  enableSecondReview,
+  onModeratorAiIdChange,
+  onAgentSelectionStyleChange,
+  onEnableSecondReviewChange,
+}) => {
   const { colors } = useTheme();
   const selectedConfig = configs.find(c => c.id === moderatorAiId);
   const defaultConfig = configs.find(c => c.isDefault);
@@ -986,6 +1097,32 @@ const IntentSettings: React.FC<IntentSettingsProps> = ({ configs, moderatorAiId,
               </option>
             ))}
           </select>
+        </div>
+
+        <div className="mt-4">
+          <label className={`block text-sm mb-2 ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>选人风格</label>
+          <select
+            value={agentSelectionStyle}
+            onChange={e => onAgentSelectionStyleChange(e.target.value as AgentSelectionStyle)}
+            className={`w-full fin-input rounded-lg px-3 py-2 text-sm ${colors.isDark ? 'text-white' : 'text-slate-800'}`}
+          >
+            <option value="balanced">平衡（默认）</option>
+            <option value="conservative">稳健优先</option>
+            <option value="aggressive">激进优先</option>
+          </select>
+          <div className={`text-xs mt-2 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+            {agentSelectionStyle === 'conservative' && '偏向风控/基本面，减少追涨型观点。'}
+            {agentSelectionStyle === 'balanced' && '综合短中线视角，默认推荐。'}
+            {agentSelectionStyle === 'aggressive' && '增加技术/资金/异动视角，适合短线交易场景。'}
+          </div>
+        </div>
+
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <div>
+            <div className={`text-sm font-medium ${colors.isDark ? 'text-white' : 'text-slate-800'}`}>启用二轮复议</div>
+            <div className={`text-xs mt-1 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>开启后会在补充数据就绪时让已选专家做第二轮修正发言</div>
+          </div>
+          <ToggleSwitch checked={enableSecondReview} onChange={onEnableSecondReviewChange} />
         </div>
 
         {/* 当前选择的配置信息 */}
@@ -1042,7 +1179,6 @@ const getDefaultBaseUrl = (provider: string): string => {
   switch (provider) {
     case 'openai': return 'https://api.openai.com/v1';
     case 'gemini': return 'https://generativelanguage.googleapis.com';
-    case 'anthropic': return 'https://api.anthropic.com';
     default: return '';
   }
 };
@@ -1052,7 +1188,6 @@ const getDefaultModel = (provider: string): string => {
     case 'openai': return 'gpt-5.2';
     case 'gemini': return 'gemini-2.5-flash';
     case 'vertexai': return 'gemini-2.5-flash';
-    case 'anthropic': return 'claude-sonnet-4-20250514';
     default: return '';
   }
 };
@@ -1473,285 +1608,6 @@ const MCPEditForm: React.FC<MCPEditFormProps> = ({ server, status, tools, onBack
   );
 };
 
-// ========== 图表设置选项卡（涨跌颜色 + 技术指标） ==========
-const ChartSettings: React.FC<{ saveConfig: (updates: any) => void }> = ({ saveConfig }) => {
-  const { colors } = useTheme();
-  const { mode, setMode } = useCandleColor();
-  const { config: indConfig, updateIndicator, resetIndicator } = useIndicator();
-
-  // 保存指标配置到后端
-  const saveIndicators = useCallback((newConfig: IndicatorConfig) => {
-    saveConfig({ indicators: newConfig });
-  }, [saveConfig]);
-
-  const handleToggle = useCallback(<T extends IndicatorType>(type: T, enabled: boolean) => {
-    updateIndicator(type, { enabled } as Partial<IndicatorConfig[T]>);
-    const updated = { ...indConfig, [type]: { ...indConfig[type], enabled } };
-    saveIndicators(updated);
-  }, [indConfig, updateIndicator, saveIndicators]);
-
-  const handleReset = useCallback((type: IndicatorType) => {
-    resetIndicator(type);
-    const updated = { ...indConfig, [type]: DEFAULT_INDICATORS[type] };
-    saveIndicators(updated);
-  }, [indConfig, resetIndicator, saveIndicators]);
-
-  const handleParamChange = useCallback(<T extends IndicatorType>(type: T, key: string, value: number | number[] | boolean) => {
-    updateIndicator(type, { [key]: value } as Partial<IndicatorConfig[T]>);
-    const updated = { ...indConfig, [type]: { ...indConfig[type], [key]: value } };
-    saveIndicators(updated);
-  }, [indConfig, updateIndicator, saveIndicators]);
-
-  const colorOptions: { value: CandleColorMode; label: string; upLabel: string; downLabel: string; upCls: string; downCls: string }[] = [
-    { value: 'red-up', label: '红涨绿跌', upLabel: '涨', downLabel: '跌', upCls: 'text-red-500', downCls: 'text-green-500' },
-    { value: 'green-up', label: '绿涨红跌', upLabel: '涨', downLabel: '跌', upCls: 'text-green-500', downCls: 'text-red-500' },
-  ];
-
-  const inputCls = `w-full px-2 py-1 text-xs rounded border ${
-    colors.isDark ? 'bg-slate-800 border-slate-600 text-slate-200' : 'bg-white border-slate-300 text-slate-700'
-  }`;
-  const labelCls = `text-xs ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`;
-
-  return (
-    <div className="space-y-6 overflow-y-auto max-h-[420px] pr-1">
-      {/* ===== 涨跌颜色 ===== */}
-      <div>
-        <h3 className={`font-medium ${colors.isDark ? 'text-white' : 'text-slate-800'}`}>涨跌颜色</h3>
-        <p className={`text-xs mt-1 ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-          设置图表及行情中涨跌的显示颜色，切换后全局生效
-        </p>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        {colorOptions.map(opt => (
-          <button
-            key={opt.value}
-            onClick={() => {
-              setMode(opt.value);
-              saveConfig({ candleColorMode: opt.value });
-            }}
-            className={`relative p-4 rounded-xl border-2 transition-all ${
-              mode === opt.value
-                ? 'border-[var(--accent)] bg-[var(--accent)]/10'
-                : (colors.isDark ? 'border-slate-700 hover:border-slate-600 bg-slate-800/40' : 'border-slate-200 hover:border-slate-300 bg-slate-50')
-            }`}
-          >
-            {mode === opt.value && (
-              <div className="absolute top-2 right-2">
-                <Check className="h-4 w-4 text-[var(--accent)]" />
-              </div>
-            )}
-            <div className="flex items-center justify-center gap-4 mb-3">
-              <div className="flex flex-col items-center">
-                <div className={`text-2xl font-bold ${opt.upCls}`}>▲</div>
-                <span className={`text-xs mt-1 ${opt.upCls}`}>{opt.upLabel}</span>
-              </div>
-              <div className="flex flex-col items-center">
-                <div className={`text-2xl font-bold ${opt.downCls}`}>▼</div>
-                <span className={`text-xs mt-1 ${opt.downCls}`}>{opt.downLabel}</span>
-              </div>
-            </div>
-            <div className={`text-sm font-medium text-center ${colors.isDark ? 'text-slate-200' : 'text-slate-700'}`}>
-              {opt.label}
-            </div>
-          </button>
-        ))}
-      </div>
-
-      {/* ===== 分隔线 ===== */}
-      <div className={`border-t ${colors.isDark ? 'border-slate-700' : 'border-slate-200'}`} />
-
-      {/* ===== 主图指标 ===== */}
-      <div>
-        <h3 className={`font-medium ${colors.isDark ? 'text-white' : 'text-slate-800'}`}>主图指标</h3>
-        <p className={`text-xs mt-1 mb-3 ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-          叠加在 K 线主图上的技术指标曲线
-        </p>
-
-        {/* MA 均线 */}
-        <IndicatorRow
-          label="MA 均线"
-          enabled={indConfig.ma.enabled}
-          onToggle={(v) => handleToggle('ma', v)}
-          onReset={() => handleReset('ma')}
-          colors={colors}
-        >
-          <div>
-            <span className={labelCls}>周期（逗号分隔）</span>
-            <input
-              className={inputCls}
-              value={(indConfig.ma.periods ?? []).join(',')}
-              onChange={(e) => {
-                const periods = e.target.value.split(',').map(Number).filter(n => n > 0);
-                if (periods.length > 0) handleParamChange('ma', 'periods', periods);
-              }}
-            />
-          </div>
-        </IndicatorRow>
-
-        {/* EMA 均线 */}
-        <IndicatorRow
-          label="EMA 指数均线"
-          enabled={indConfig.ema.enabled}
-          onToggle={(v) => handleToggle('ema', v)}
-          onReset={() => handleReset('ema')}
-          colors={colors}
-        >
-          <div>
-            <span className={labelCls}>周期（逗号分隔）</span>
-            <input
-              className={inputCls}
-              value={(indConfig.ema.periods ?? []).join(',')}
-              onChange={(e) => {
-                const periods = e.target.value.split(',').map(Number).filter(n => n > 0);
-                if (periods.length > 0) handleParamChange('ema', 'periods', periods);
-              }}
-            />
-          </div>
-        </IndicatorRow>
-
-        {/* BOLL 布林带 */}
-        <IndicatorRow
-          label="BOLL 布林带"
-          enabled={indConfig.boll.enabled}
-          onToggle={(v) => handleToggle('boll', v)}
-          onReset={() => handleReset('boll')}
-          colors={colors}
-        >
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <span className={labelCls}>周期</span>
-              <input type="number" className={inputCls} value={indConfig.boll.period}
-                onChange={(e) => handleParamChange('boll', 'period', Math.max(1, Number(e.target.value) || 20))} />
-            </div>
-            <div>
-              <span className={labelCls}>倍数</span>
-              <input type="number" step="0.1" className={inputCls} value={indConfig.boll.multiplier}
-                onChange={(e) => handleParamChange('boll', 'multiplier', Math.max(0.1, Number(e.target.value) || 2))} />
-            </div>
-          </div>
-        </IndicatorRow>
-      </div>
-
-      {/* ===== 分隔线 ===== */}
-      <div className={`border-t ${colors.isDark ? 'border-slate-700' : 'border-slate-200'}`} />
-
-      {/* ===== 副图指标 ===== */}
-      <div>
-        <h3 className={`font-medium ${colors.isDark ? 'text-white' : 'text-slate-800'}`}>副图指标</h3>
-        <p className={`text-xs mt-1 mb-3 ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-          在底部副图区域切换显示的技术指标
-        </p>
-
-        {/* MACD */}
-        <IndicatorRow
-          label="MACD"
-          enabled={indConfig.macd.enabled}
-          onToggle={(v) => handleToggle('macd', v)}
-          onReset={() => handleReset('macd')}
-          colors={colors}
-        >
-          <div className="grid grid-cols-3 gap-2">
-            <div>
-              <span className={labelCls}>快线</span>
-              <input type="number" className={inputCls} value={indConfig.macd.fast}
-                onChange={(e) => handleParamChange('macd', 'fast', Math.max(1, Number(e.target.value) || 12))} />
-            </div>
-            <div>
-              <span className={labelCls}>慢线</span>
-              <input type="number" className={inputCls} value={indConfig.macd.slow}
-                onChange={(e) => handleParamChange('macd', 'slow', Math.max(1, Number(e.target.value) || 26))} />
-            </div>
-            <div>
-              <span className={labelCls}>信号</span>
-              <input type="number" className={inputCls} value={indConfig.macd.signal}
-                onChange={(e) => handleParamChange('macd', 'signal', Math.max(1, Number(e.target.value) || 9))} />
-            </div>
-          </div>
-        </IndicatorRow>
-
-        {/* RSI */}
-        <IndicatorRow
-          label="RSI"
-          enabled={indConfig.rsi.enabled}
-          onToggle={(v) => handleToggle('rsi', v)}
-          onReset={() => handleReset('rsi')}
-          colors={colors}
-        >
-          <div>
-            <span className={labelCls}>周期</span>
-            <input type="number" className={inputCls} value={indConfig.rsi.period}
-              onChange={(e) => handleParamChange('rsi', 'period', Math.max(1, Number(e.target.value) || 14))} />
-          </div>
-        </IndicatorRow>
-
-        {/* KDJ */}
-        <IndicatorRow
-          label="KDJ"
-          enabled={indConfig.kdj.enabled}
-          onToggle={(v) => handleToggle('kdj', v)}
-          onReset={() => handleReset('kdj')}
-          colors={colors}
-        >
-          <div className="grid grid-cols-3 gap-2">
-            <div>
-              <span className={labelCls}>周期</span>
-              <input type="number" className={inputCls} value={indConfig.kdj.period}
-                onChange={(e) => handleParamChange('kdj', 'period', Math.max(1, Number(e.target.value) || 9))} />
-            </div>
-            <div>
-              <span className={labelCls}>K</span>
-              <input type="number" className={inputCls} value={indConfig.kdj.k}
-                onChange={(e) => handleParamChange('kdj', 'k', Math.max(1, Number(e.target.value) || 3))} />
-            </div>
-            <div>
-              <span className={labelCls}>D</span>
-              <input type="number" className={inputCls} value={indConfig.kdj.d}
-                onChange={(e) => handleParamChange('kdj', 'd', Math.max(1, Number(e.target.value) || 3))} />
-            </div>
-          </div>
-        </IndicatorRow>
-      </div>
-    </div>
-  );
-};
-
-// ========== 指标行组件 ==========
-const IndicatorRow: React.FC<{
-  label: string;
-  enabled: boolean;
-  onToggle: (v: boolean) => void;
-  onReset: () => void;
-  colors: any;
-  children: React.ReactNode;
-}> = ({ label, enabled, onToggle, onReset, colors, children }) => (
-  <div className={`rounded-lg p-3 mb-2 ${colors.isDark ? 'bg-slate-800/40' : 'bg-slate-50'}`}>
-    <div className="flex items-center justify-between mb-2">
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => onToggle(!enabled)}
-          className={`w-8 h-4 rounded-full transition-colors relative ${
-            enabled ? 'bg-[var(--accent)]' : (colors.isDark ? 'bg-slate-600' : 'bg-slate-300')
-          }`}
-        >
-          <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
-            enabled ? 'left-[18px]' : 'left-0.5'
-          }`} />
-        </button>
-        <span className={`text-sm font-medium ${colors.isDark ? 'text-slate-200' : 'text-slate-700'}`}>{label}</span>
-      </div>
-      <button
-        onClick={onReset}
-        className={`text-[10px] px-1.5 py-0.5 rounded ${
-          colors.isDark ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-700' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-200'
-        }`}
-      >
-        重置
-      </button>
-    </div>
-    {enabled && <div className="mt-2">{children}</div>}
-  </div>
-);
-
 // ========== 代理设置选项卡 ==========
 interface ProxySettingsProps {
   config: ProxyConfig;
@@ -1818,233 +1674,6 @@ const ProxySettings: React.FC<ProxySettingsProps> = ({ config, onChange }) => {
           <p className={`text-xs mt-2 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>
             支持 HTTP/HTTPS 代理，格式：http://host:port 或 http://user:pass@host:port
           </p>
-        </div>
-      )}
-    </div>
-  );
-};
-
-// ========== OpenClaw 设置选项卡 ==========
-interface OpenClawSettingsProps {
-  config: OpenClawConfig;
-  onChange: (config: OpenClawConfig) => void;
-}
-
-const OpenClawSettings: React.FC<OpenClawSettingsProps> = ({ config, onChange }) => {
-  const { colors } = useTheme();
-  const [status, setStatus] = useState<{ running: boolean; port: number } | null>(null);
-  const [switching, setSwitching] = useState(false);
-
-  useEffect(() => {
-    const fetchStatus = () => {
-      // @ts-ignore
-      window.go?.main?.App?.GetOpenClawStatus?.().then((s: any) => {
-        setStatus(s);
-        // 状态同步后结束切换中状态
-        if (s && s.running === config.enabled) {
-          setSwitching(false);
-        }
-      });
-    };
-    fetchStatus();
-    // 仅在切换中时高频轮询，同步后停止
-    if (switching) {
-      const timer = setInterval(fetchStatus, 500);
-      return () => clearInterval(timer);
-    }
-  }, [config.enabled, switching]);
-
-  const handleToggle = () => {
-    if (switching) return;
-    setSwitching(true);
-    onChange({ ...config, enabled: !config.enabled });
-  };
-
-  // 判断状态：切换中 or 已同步
-  const isRunning = status?.running ?? false;
-  const isSynced = isRunning === config.enabled;
-  const statusText = switching || !isSynced
-    ? (config.enabled ? '启动中...' : '关闭中...')
-    : (isRunning ? `运行中 (端口 ${status?.port})` : '未运行');
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h3 className={`font-medium ${colors.isDark ? 'text-white' : 'text-slate-800'}`}>OpenClaw 服务</h3>
-        <p className={`text-sm mt-1 ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-          启用后可通过 HTTP API 供 OpenClaw 等 AI Agent 调用分析能力
-        </p>
-      </div>
-
-      {/* 启用开关 - Switch 样式 */}
-      <div className={`flex items-center justify-between p-3 rounded-lg border ${
-        colors.isDark ? 'border-slate-700' : 'border-slate-300'
-      }`}>
-        <div>
-          <div className={`text-sm font-medium ${colors.isDark ? 'text-white' : 'text-slate-800'}`}>服务状态</div>
-          <div className={`text-xs mt-0.5 ${
-            switching || !isSynced ? 'text-yellow-400' : (isRunning ? 'text-green-400' : (colors.isDark ? 'text-slate-400' : 'text-slate-500'))
-          }`}>
-            {statusText}
-          </div>
-        </div>
-        <button
-          onClick={handleToggle}
-          disabled={switching}
-          className={`relative w-11 h-6 rounded-full transition-colors ${
-            switching ? 'bg-yellow-500' : (config.enabled ? 'bg-[var(--accent)]' : (colors.isDark ? 'bg-slate-600' : 'bg-slate-300'))
-          } ${switching ? 'cursor-wait' : 'cursor-pointer'}`}
-        >
-          <div className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-            config.enabled ? 'translate-x-6' : 'translate-x-1'
-          } ${switching ? 'animate-pulse' : ''}`} />
-        </button>
-      </div>
-
-      {config.enabled && (
-        <div className="space-y-4">
-          {/* 端口 */}
-          <div>
-            <label className={`block text-sm mb-2 ${colors.isDark ? 'text-slate-300' : 'text-slate-600'}`}>端口</label>
-            <input
-              type="number"
-              value={config.port}
-              onChange={(e) => onChange({ ...config, port: parseInt(e.target.value) || 8080 })}
-              className={`w-full fin-input rounded-lg px-3 py-2 text-sm ${colors.isDark ? 'text-white' : 'text-slate-800'}`}
-            />
-          </div>
-          {/* API Key */}
-          <div>
-            <label className={`block text-sm mb-2 ${colors.isDark ? 'text-slate-300' : 'text-slate-600'}`}>API Key (可选)</label>
-            <input
-              type="password"
-              value={config.apiKey}
-              onChange={(e) => onChange({ ...config, apiKey: e.target.value })}
-              placeholder="留空则不鉴权"
-              className={`w-full fin-input rounded-lg px-3 py-2 text-sm ${colors.isDark ? 'text-white' : 'text-slate-800'}`}
-            />
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-// ========== 更新设置选项卡 ==========
-const UpdateSettings: React.FC = () => {
-  const { colors } = useTheme();
-  const [currentVersion, setCurrentVersion] = useState<string>('');
-  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [updating, setUpdating] = useState(false);
-  const [progress, setProgress] = useState<UpdateProgress | null>(null);
-
-  useEffect(() => {
-    getCurrentVersion().then(setCurrentVersion);
-    const cleanup = onUpdateProgress(setProgress);
-    return cleanup;
-  }, []);
-
-  const handleCheckUpdate = async () => {
-    setChecking(true);
-    setUpdateInfo(null);
-    try {
-      const info = await checkForUpdate();
-      setUpdateInfo(info);
-    } finally {
-      setChecking(false);
-    }
-  };
-
-  const handleUpdate = async () => {
-    setUpdating(true);
-    setProgress(null);
-    try {
-      const result = await doUpdate();
-      if (result !== 'success') {
-        setProgress({ status: 'error', message: result, percent: 0 });
-      }
-    } catch (e) {
-      setProgress({ status: 'error', message: String(e), percent: 0 });
-    }
-  };
-
-  const handleRestart = async () => {
-    await restartApp();
-  };
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h3 className={`font-medium ${colors.isDark ? 'text-white' : 'text-slate-800'}`}>软件更新</h3>
-        <p className={`text-sm mt-1 ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>检查并安装最新版本</p>
-      </div>
-
-      <div className="fin-panel rounded-lg p-4 border fin-divider">
-        <div className="flex items-center justify-between">
-          <div>
-            <span className={`text-sm ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>当前版本</span>
-            <p className={`font-medium mt-1 ${colors.isDark ? 'text-white' : 'text-slate-800'}`}>v{currentVersion || '...'}</p>
-          </div>
-          <button
-            onClick={handleCheckUpdate}
-            disabled={checking || updating}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm disabled:opacity-50 transition-colors ${colors.isDark ? 'bg-slate-700 hover:bg-slate-600 text-white' : 'bg-slate-200 hover:bg-slate-300 text-slate-700'}`}
-          >
-            {checking ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            {checking ? '检查中...' : '检查更新'}
-          </button>
-        </div>
-      </div>
-
-      {updateInfo && (
-        <div className={`fin-panel rounded-lg p-4 border ${updateInfo.hasUpdate ? 'border-accent/50 bg-accent/5' : 'fin-divider'}`}>
-          {updateInfo.error ? (
-            <div className="text-red-400 text-sm">{updateInfo.error}</div>
-          ) : updateInfo.hasUpdate ? (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="text-accent-2 text-sm font-medium">发现新版本</span>
-                  <p className={`font-medium mt-1 ${colors.isDark ? 'text-white' : 'text-slate-800'}`}>v{updateInfo.latestVersion}</p>
-                </div>
-                <button onClick={handleUpdate} disabled={updating}
-                  className="flex items-center gap-2 px-4 py-2 bg-gradient-to-br from-[var(--accent)] to-[var(--accent-2)] text-white rounded-lg text-sm disabled:opacity-50">
-                  {updating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                  {updating ? '更新中...' : '立即更新'}
-                </button>
-              </div>
-              {updateInfo.releaseNotes && (
-                <div className="pt-3 border-t fin-divider">
-                  <span className={`text-xs ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>更新说明</span>
-                  <p className={`text-sm mt-1 whitespace-pre-wrap ${colors.isDark ? 'text-slate-300' : 'text-slate-600'}`}>{updateInfo.releaseNotes}</p>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 text-accent-2">
-              <Check className="h-4 w-4" /><span className="text-sm">已是最新版本</span>
-            </div>
-          )}
-        </div>
-      )}
-
-      {progress && (
-        <div className="fin-panel rounded-lg p-4 border fin-divider">
-          <div className="flex items-center justify-between mb-2">
-            <span className={`text-sm ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>{progress.message}</span>
-            {progress.status === 'completed' && (
-              <button onClick={handleRestart} className="flex items-center gap-2 px-3 py-1.5 bg-accent text-white rounded-lg text-xs">
-                <RotateCcw className="h-3 w-3" />重启应用
-              </button>
-            )}
-          </div>
-          {progress.percent > 0 && (
-            <div className={`w-full rounded-full h-2 ${colors.isDark ? 'bg-slate-700' : 'bg-slate-300'}`}>
-              <div className={`h-2 rounded-full transition-all ${progress.status === 'error' ? 'bg-red-500' : progress.status === 'completed' ? 'bg-accent' : 'bg-accent-2'}`}
-                style={{ width: `${progress.percent}%` }} />
-            </div>
-          )}
         </div>
       )}
     </div>

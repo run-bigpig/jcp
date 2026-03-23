@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/run-bigpig/jcp/internal/adk"
 	"github.com/run-bigpig/jcp/internal/adk/mcp"
@@ -13,8 +17,6 @@ import (
 	"github.com/run-bigpig/jcp/internal/meeting"
 	"github.com/run-bigpig/jcp/internal/memory"
 	"github.com/run-bigpig/jcp/internal/models"
-	"github.com/run-bigpig/jcp/internal/openclaw"
-	"github.com/run-bigpig/jcp/internal/pkg/paths"
 	"github.com/run-bigpig/jcp/internal/pkg/proxy"
 	"github.com/run-bigpig/jcp/internal/services"
 	"github.com/run-bigpig/jcp/internal/services/hottrend"
@@ -30,8 +32,12 @@ type App struct {
 	configService     *services.ConfigService
 	marketService     *services.MarketService
 	newsService       *services.NewsService
+	f10Service        *services.F10Service
 	hotTrendService   *hottrend.HotTrendService
 	longHuBangService *services.LongHuBangService
+	coreDataService   *services.CoreDataService
+	intentDataService *services.IntentDataService
+	decisionService   *services.DecisionSupportService
 	marketPusher      *services.MarketDataPusher
 	meetingService    *meeting.Service
 	sessionService    *services.SessionService
@@ -41,7 +47,6 @@ type App struct {
 	mcpManager        *mcp.Manager
 	memoryManager     *memory.Manager
 	updateService     *services.UpdateService
-	openClawServer    *openclaw.Server
 
 	// 会议取消管理
 	meetingCancels   map[string]context.CancelFunc
@@ -50,7 +55,7 @@ type App struct {
 
 // NewApp creates a new App application struct
 func NewApp() *App {
-	dataDir := paths.GetDataDir()
+	dataDir := getDataDir()
 
 	// 初始化文件日志
 	if err := logger.InitFileLogger(filepath.Join(dataDir, "logs")); err != nil {
@@ -63,12 +68,16 @@ func NewApp() *App {
 	if err != nil {
 		panic(err)
 	}
+	config := configService.GetConfig()
 
 	// 初始化研报服务
 	researchReportService := services.NewResearchReportService()
 
+	// 初始化 F10 数据服务
+	f10Service := services.NewF10Service()
+
 	// 初始化舆情热点服务
-	hotTrendSvc, err := hottrend.NewHotTrendService()
+	hotTrendSvc, err := hottrend.NewHotTrendService(dataDir)
 	if err != nil {
 		log.Warn("HotTrend service error: %v", err)
 	}
@@ -79,21 +88,32 @@ func NewApp() *App {
 	// 初始化龙虎榜服务
 	longHuBangService := services.NewLongHuBangService()
 
+	// 初始化核心数据包服务
+	coreDataService := services.NewCoreDataService(marketService, f10Service)
+
+	// 初始化意图数据服务
+	intentDataService := services.NewIntentDataService(f10Service, newsService, longHuBangService)
+	decisionService := services.NewDecisionSupportService(dataDir, f10Service)
+
 	// 初始化工具注册中心
-	toolRegistry := tools.NewRegistry(marketService, newsService, configService, researchReportService, hotTrendSvc, longHuBangService)
+	toolRegistry := tools.NewRegistry(marketService, newsService, configService, researchReportService, f10Service, coreDataService, hotTrendSvc, longHuBangService)
 
 	// 初始化 MCP 管理器
 	mcpManager := mcp.NewManager()
-	if err := mcpManager.LoadConfigs(configService.GetConfig().MCPServers); err != nil {
+	if err := mcpManager.LoadConfigs(config.MCPServers); err != nil {
 		log.Warn("MCP load error: %v", err)
 	}
 
 	// 初始化会议室服务
 	meetingService := meeting.NewServiceFull(toolRegistry, mcpManager)
+	meetingService.SetRetryCount(config.AIRetryCount)
+	meetingService.SetVerboseAgentIO(config.VerboseAgentIO)
+	meetingService.SetAgentSelectionStyle(config.AgentSelectionStyle)
+	meetingService.SetEnableSecondReview(config.EnableSecondReview)
 
 	// 初始化记忆管理器
 	var memoryManager *memory.Manager
-	memConfig := configService.GetConfig().Memory
+	memConfig := config.Memory
 	if memConfig.Enabled {
 		memoryManager = memory.NewManagerWithConfig(dataDir, memory.Config{
 			MaxRecentRounds:   memConfig.MaxRecentRounds,
@@ -104,10 +124,10 @@ func NewApp() *App {
 		meetingService.SetMemoryManager(memoryManager)
 
 		if memConfig.AIConfigID != "" {
-			for i := range configService.GetConfig().AIConfigs {
-				if configService.GetConfig().AIConfigs[i].ID == memConfig.AIConfigID {
-					meetingService.SetMemoryAIConfig(&configService.GetConfig().AIConfigs[i])
-					log.Info("Memory LLM: %s", configService.GetConfig().AIConfigs[i].ModelName)
+			for i := range config.AIConfigs {
+				if config.AIConfigs[i].ID == memConfig.AIConfigID {
+					meetingService.SetMemoryAIConfig(&config.AIConfigs[i])
+					log.Info("Memory LLM: %s", config.AIConfigs[i].ModelName)
 					break
 				}
 			}
@@ -116,11 +136,11 @@ func NewApp() *App {
 	}
 
 	// 设置 Moderator AI 配置
-	if configService.GetConfig().ModeratorAIID != "" {
-		for i := range configService.GetConfig().AIConfigs {
-			if configService.GetConfig().AIConfigs[i].ID == configService.GetConfig().ModeratorAIID {
-				meetingService.SetModeratorAIConfig(&configService.GetConfig().AIConfigs[i])
-				log.Info("Moderator LLM: %s", configService.GetConfig().AIConfigs[i].ModelName)
+	if config.ModeratorAIID != "" {
+		for i := range config.AIConfigs {
+			if config.AIConfigs[i].ID == config.ModeratorAIID {
+				meetingService.SetModeratorAIConfig(&config.AIConfigs[i])
+				log.Info("Moderator LLM: %s", config.AIConfigs[i].ModelName)
 				break
 			}
 		}
@@ -136,40 +156,21 @@ func NewApp() *App {
 	agentContainer := agent.NewContainer()
 	agentContainer.LoadAgents(strategyService.GetAllAgents())
 
-	// 初始化更新服务
-	updateService := services.NewUpdateService("run-bigpig", "jcp", Version)
-
-	// 初始化 OpenClaw 服务
-	openClawServer := openclaw.NewServer(meetingService, agentContainer, func(aiConfigID string) *models.AIConfig {
-		cfg := configService.GetConfig()
-		if aiConfigID == "" {
-			aiConfigID = cfg.DefaultAIID
-		}
-		for i := range cfg.AIConfigs {
-			if cfg.AIConfigs[i].ID == aiConfigID {
-				return &cfg.AIConfigs[i]
-			}
-		}
-		return nil
-	}, func(code string) (*models.Stock, error) {
-		stocks, err := marketService.GetStockRealTimeData(code)
-		if err != nil {
-			return nil, err
-		}
-		if len(stocks) == 0 {
-			return nil, nil
-		}
-		return &stocks[0], nil
-	})
-
 	log.Info("所有服务初始化完成")
 
-	return &App{
+	// 初始化更新服务
+	updateService := services.NewUpdateService("run-bigpig", "jcp", "0.3.3")
+
+	app := &App{
 		configService:     configService,
 		marketService:     marketService,
 		newsService:       newsService,
+		f10Service:        f10Service,
 		hotTrendService:   hotTrendSvc,
 		longHuBangService: longHuBangService,
+		coreDataService:   coreDataService,
+		intentDataService: intentDataService,
+		decisionService:   decisionService,
 		meetingService:    meetingService,
 		sessionService:    sessionService,
 		strategyService:   strategyService,
@@ -178,9 +179,63 @@ func NewApp() *App {
 		mcpManager:        mcpManager,
 		memoryManager:     memoryManager,
 		updateService:     updateService,
-		openClawServer:    openClawServer,
 		meetingCancels:    make(map[string]context.CancelFunc),
 	}
+
+	if app.meetingService != nil {
+		app.meetingService.SetSupplementContextBuilder(app.buildSupplementContext)
+	}
+
+	return app
+}
+
+func getDataDir() string {
+	// 允许通过环境变量显式指定数据目录，便于部署与调试。
+	if custom := strings.TrimSpace(os.Getenv("JCP_DATA_DIR")); custom != "" {
+		if filepath.IsAbs(custom) {
+			return custom
+		}
+		if wd, err := os.Getwd(); err == nil {
+			return filepath.Join(wd, custom)
+		}
+		return custom
+	}
+
+	// 便携模式：优先使用可执行文件同目录的 data 子目录。
+	if exePath, err := os.Executable(); err == nil && exePath != "" {
+		exeDir := filepath.Dir(exePath)
+		if !isLikelyTempExecutableDir(exeDir) {
+			return filepath.Join(exeDir, "data")
+		}
+	}
+
+	// 开发态兜底：使用当前工作目录的 data 子目录。
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		return filepath.Join(wd, "data")
+	}
+
+	return filepath.Join(".", "data")
+}
+
+func isLikelyTempExecutableDir(dir string) bool {
+	if dir == "" {
+		return true
+	}
+	lower := strings.ToLower(filepath.ToSlash(dir))
+	if strings.Contains(lower, "/go-build/") || strings.Contains(lower, "/tmp/") || strings.Contains(lower, "/temp/") {
+		return true
+	}
+
+	tempDir := os.TempDir()
+	if tempDir == "" {
+		return false
+	}
+
+	rel, err := filepath.Rel(tempDir, dir)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (!strings.HasPrefix(rel, "..") && rel != "")
 }
 
 // startup is called when the app starts. The context is saved
@@ -203,31 +258,20 @@ func (a *App) startup(ctx context.Context) {
 		a.meetingService.SetAIConfigResolver(a.getAIConfigByID)
 	}
 
-	// 初始化更新服务
-	if a.updateService != nil {
-		a.updateService.Startup(ctx)
-	}
-
 	// 初始化并启动市场数据推送服务（需要 context）
 	a.marketPusher = services.NewMarketDataPusher(a.marketService, a.configService, a.newsService)
 	a.marketPusher.Start(ctx)
 	log.Info("市场数据推送服务已启动")
 
-	// 启动 OpenClaw 服务（如果已启用）
-	cfg := a.configService.GetConfig()
-	if cfg.OpenClaw.Enabled && cfg.OpenClaw.Port > 0 {
-		if err := a.openClawServer.Start(cfg.OpenClaw.Port, cfg.OpenClaw.APIKey); err != nil {
-			log.Warn("OpenClaw 启动失败: %v", err)
-		}
+	// 初始化更新服务
+	if a.updateService != nil {
+		a.updateService.Startup(ctx)
 	}
 }
 
 // shutdown 应用关闭时调用
 func (a *App) shutdown(ctx context.Context) {
 	log.Info("应用正在关闭...")
-	if a.openClawServer != nil {
-		a.openClawServer.Stop()
-	}
 	if a.marketPusher != nil {
 		a.marketPusher.Stop()
 	}
@@ -275,93 +319,19 @@ func (a *App) UpdateConfig(config *models.AppConfig) string {
 			}
 		}
 	}
-	// 更新 OpenClaw 服务配置（热更新）
-	a.applyOpenClawConfig(&config.OpenClaw)
+	// 更新 AI 重试次数
+	if a.meetingService != nil {
+		a.meetingService.SetRetryCount(config.AIRetryCount)
+		a.meetingService.SetVerboseAgentIO(config.VerboseAgentIO)
+		a.meetingService.SetAgentSelectionStyle(config.AgentSelectionStyle)
+		a.meetingService.SetEnableSecondReview(config.EnableSecondReview)
+	}
 	return "success"
 }
 
-// applyOpenClawConfig 应用 OpenClaw 配置变更
-func (a *App) applyOpenClawConfig(cfg *models.OpenClawConfig) {
-	if a.openClawServer == nil {
-		return
-	}
-	if !cfg.Enabled {
-		a.openClawServer.Stop()
-		return
-	}
-	if cfg.Port <= 0 {
-		return
-	}
-	// 端口或密钥变更时重启
-	if a.openClawServer.IsRunning() {
-		if a.openClawServer.GetPort() != cfg.Port {
-			a.openClawServer.Restart(cfg.Port, cfg.APIKey)
-		}
-	} else {
-		a.openClawServer.Start(cfg.Port, cfg.APIKey)
-	}
-}
-
-// GetOpenClawStatus 获取 OpenClaw 服务状态
-func (a *App) GetOpenClawStatus() map[string]any {
-	if a.openClawServer == nil {
-		return map[string]any{"running": false}
-	}
-	return map[string]any{
-		"running": a.openClawServer.IsRunning(),
-		"port":    a.openClawServer.GetPort(),
-	}
-}
-
-// mergeRealtimeStock 合并实时行情字段，保留本地静态字段
-func (a *App) mergeRealtimeStock(base models.Stock, rt models.Stock) models.Stock {
-	merged := base
-	if rt.Name != "" {
-		merged.Name = rt.Name
-	}
-	merged.Price = rt.Price
-	merged.Change = rt.Change
-	merged.ChangePercent = rt.ChangePercent
-	merged.Volume = rt.Volume
-	merged.Amount = rt.Amount
-	merged.Open = rt.Open
-	merged.High = rt.High
-	merged.Low = rt.Low
-	merged.PreClose = rt.PreClose
-	return merged
-}
-
-// GetWatchlist 获取自选股列表（附带实时行情）
+// GetWatchlist 获取自选股列表
 func (a *App) GetWatchlist() []models.Stock {
-	list := a.configService.GetWatchlist()
-	if len(list) == 0 {
-		return list
-	}
-
-	// 收集所有股票代码，拉一次实时行情
-	codes := make([]string, len(list))
-	for i, s := range list {
-		codes[i] = s.Symbol
-	}
-	realtime, err := a.marketService.GetStockRealTimeData(codes...)
-	if err != nil || len(realtime) == 0 {
-		return list
-	}
-
-	// 用实时数据填充
-	rtMap := make(map[string]models.Stock, len(realtime))
-	for _, s := range realtime {
-		rtMap[s.Symbol] = s
-	}
-	result := make([]models.Stock, len(list))
-	for i, s := range list {
-		if rt, ok := rtMap[s.Symbol]; ok {
-			result[i] = a.mergeRealtimeStock(s, rt)
-		} else {
-			result[i] = s
-		}
-	}
-	return result
+	return a.configService.GetWatchlist()
 }
 
 // AddToWatchlist 添加自选股
@@ -415,6 +385,47 @@ func (a *App) SearchStocks(keyword string) []services.StockSearchResult {
 	return a.configService.SearchStocks(keyword, 20)
 }
 
+// GetMarketStatus 获取市场交易状态
+func (a *App) GetMarketStatus() services.MarketStatus {
+	return a.marketService.GetMarketStatus()
+}
+
+// GetMarketIndices 获取大盘指数数据
+func (a *App) GetMarketIndices() []models.MarketIndex {
+	indices, _ := a.marketService.GetMarketIndices()
+	return indices
+}
+
+// GetF10Overview 获取F10综合数据
+func (a *App) GetF10Overview(code string) models.F10Overview {
+	if a.f10Service == nil {
+		return models.F10Overview{
+			Code:   code,
+			Errors: map[string]string{"service": "F10 服务未初始化"},
+		}
+	}
+	result, err := a.f10Service.GetOverview(code)
+	if err != nil {
+		return models.F10Overview{
+			Code:   code,
+			Errors: map[string]string{"request": err.Error()},
+		}
+	}
+	return result
+}
+
+// GetF10Valuation 获取估值快照（用于市值/估值展示）
+func (a *App) GetF10Valuation(code string) models.StockValuation {
+	if a.f10Service == nil {
+		return models.StockValuation{}
+	}
+	valuation, err := a.f10Service.GetValuationByCode(code)
+	if err != nil {
+		log.Error("GetF10Valuation error: %v", err)
+	}
+	return valuation
+}
+
 // getDefaultAIConfig 获取默认AI配置
 func (a *App) getDefaultAIConfig(config *models.AppConfig) *models.AIConfig {
 	for i := range config.AIConfigs {
@@ -446,11 +457,19 @@ func (a *App) getAIConfigByID(aiConfigID string) *models.AIConfig {
 	return a.getDefaultAIConfig(config)
 }
 
+func normalizeStockCode(stockCode string) string {
+	return strings.ToLower(strings.TrimSpace(stockCode))
+}
+
 // ========== Session API ==========
 
 // GetOrCreateSession 获取或创建Session
 func (a *App) GetOrCreateSession(stockCode, stockName string) *models.StockSession {
 	if a.sessionService == nil {
+		return nil
+	}
+	stockCode = normalizeStockCode(stockCode)
+	if stockCode == "" {
 		return nil
 	}
 	session, _ := a.sessionService.GetOrCreateSession(stockCode, stockName)
@@ -462,6 +481,10 @@ func (a *App) GetSessionMessages(stockCode string) []models.ChatMessage {
 	if a.sessionService == nil {
 		return nil
 	}
+	stockCode = normalizeStockCode(stockCode)
+	if stockCode == "" {
+		return []models.ChatMessage{}
+	}
 	return a.sessionService.GetMessages(stockCode)
 }
 
@@ -469,6 +492,10 @@ func (a *App) GetSessionMessages(stockCode string) []models.ChatMessage {
 func (a *App) ClearSessionMessages(stockCode string) string {
 	if a.sessionService == nil {
 		return "service not ready"
+	}
+	stockCode = normalizeStockCode(stockCode)
+	if stockCode == "" {
+		return "stock code is empty"
 	}
 	if err := a.sessionService.ClearMessages(stockCode); err != nil {
 		return err.Error()
@@ -486,6 +513,10 @@ func (a *App) ClearSessionMessages(stockCode string) string {
 func (a *App) UpdateStockPosition(stockCode string, shares int64, costPrice float64) string {
 	if a.sessionService == nil {
 		return "service not ready"
+	}
+	stockCode = normalizeStockCode(stockCode)
+	if stockCode == "" {
+		return "stock code is empty"
 	}
 	if err := a.sessionService.UpdatePosition(stockCode, shares, costPrice); err != nil {
 		return err.Error()
@@ -512,6 +543,7 @@ func (a *App) AddAgentConfig(config models.AgentConfig) string {
 		Tools:       config.Tools,
 		MCPServers:  config.MCPServers,
 		Enabled:     config.Enabled,
+		AIConfigID:  config.AIConfigID,
 	}
 	if err := a.strategyService.AddAgentToActiveStrategy(agent); err != nil {
 		return err.Error()
@@ -532,6 +564,7 @@ func (a *App) UpdateAgentConfig(config models.AgentConfig) string {
 		Tools:       config.Tools,
 		MCPServers:  config.MCPServers,
 		Enabled:     config.Enabled,
+		AIConfigID:  config.AIConfigID,
 	}
 	if err := a.strategyService.UpdateAgentInActiveStrategy(agent); err != nil {
 		return err.Error()
@@ -765,6 +798,10 @@ type MeetingMessageRequest struct {
 
 // cancelMeetingInternal 内部取消会议方法
 func (a *App) cancelMeetingInternal(stockCode string) {
+	stockCode = normalizeStockCode(stockCode)
+	if stockCode == "" {
+		return
+	}
 	a.meetingCancelsMu.Lock()
 	if cancel, ok := a.meetingCancels[stockCode]; ok {
 		cancel()
@@ -775,13 +812,20 @@ func (a *App) cancelMeetingInternal(stockCode string) {
 
 // CancelMeeting 取消指定股票的会议（前端调用）
 func (a *App) CancelMeeting(stockCode string) bool {
-	a.cancelMeetingInternal(stockCode)
-	log.Info("会议已取消: %s", stockCode)
+	normalized := normalizeStockCode(stockCode)
+	a.cancelMeetingInternal(normalized)
+	log.Info("会议已取消: %s", normalized)
 	return true
 }
 
 // SendMeetingMessage 发送会议室消息（@指定成员回复）
 func (a *App) SendMeetingMessage(req MeetingMessageRequest) []models.ChatMessage {
+	req.StockCode = normalizeStockCode(req.StockCode)
+	if req.StockCode == "" {
+		log.Warn("empty stock code in SendMeetingMessage")
+		return []models.ChatMessage{}
+	}
+
 	// 获取Session
 	session := a.sessionService.GetSession(req.StockCode)
 	if session == nil {
@@ -815,11 +859,27 @@ func (a *App) SendMeetingMessage(req MeetingMessageRequest) []models.ChatMessage
 	}
 	a.sessionService.AddMessage(req.StockCode, userMsg)
 
-	// 获取股票数据
-	stocks, _ := a.marketService.GetStockRealTimeData(req.StockCode)
-	var stock models.Stock
-	if len(stocks) > 0 {
-		stock = stocks[0]
+	// 先构建基础股票信息（行情失败时也可用）
+	stock := models.Stock{
+		Symbol: req.StockCode,
+		Name:   session.StockName,
+	}
+	if stock.Name == "" {
+		stock.Name = req.StockCode
+	}
+
+	// 构建核心数据包（含行情、估值、资金等）
+	corePack, coreContext := a.buildCoreContextPack(req.StockCode)
+	if corePack != nil {
+		stock = mergeStockSnapshot(stock, corePack.Stock)
+	}
+
+	// 核心数据包未拿到有效行情时，降级单独拉取一次实时行情
+	if stock.Price == 0 && a.marketService != nil {
+		stocks, _ := a.marketService.GetStockRealTimeData(req.StockCode)
+		if len(stocks) > 0 {
+			stock = mergeStockSnapshot(stock, stocks[0])
+		}
 	}
 
 	// 获取默认AI配置
@@ -832,38 +892,47 @@ func (a *App) SendMeetingMessage(req MeetingMessageRequest) []models.ChatMessage
 
 	// 获取持仓信息
 	position := a.sessionService.GetPosition(req.StockCode)
+	if position != nil && position.Shares > 0 {
+		log.Info("Meeting: loaded position code=%s shares=%d cost=%.2f", req.StockCode, position.Shares, position.CostPrice)
+	} else {
+		log.Info("Meeting: loaded position code=%s none", req.StockCode)
+	}
+
+	intentContext := a.buildIntentContext(req.StockCode, req.Content)
+	decisionCtx, decisionText := a.buildDecisionSupportContext(req.StockCode, stock, req.Content, position, corePack)
+	intentContext = mergeContextText(intentContext, decisionText)
 
 	// 判断是否为智能模式（无 @ 任何人）
 	if len(req.MentionIds) == 0 {
-		return a.runSmartMeeting(meetingCtx, req.StockCode, stock, req.Content, aiConfig, position)
+		return a.runSmartMeeting(meetingCtx, req.StockCode, stock, req.Content, coreContext, intentContext, aiConfig, position, decisionCtx)
 	}
 
 	// 原有逻辑：@ 指定专家
-	return a.runDirectMeeting(meetingCtx, req, stock, aiConfig, position)
+	return a.runDirectMeeting(meetingCtx, req, stock, coreContext, intentContext, aiConfig, position, decisionCtx)
 }
 
 // runSmartMeeting 智能会议模式
-func (a *App) runSmartMeeting(ctx context.Context, stockCode string, stock models.Stock, query string, aiConfig *models.AIConfig, position *models.StockPosition) []models.ChatMessage {
+func (a *App) runSmartMeeting(ctx context.Context, stockCode string, stock models.Stock, query string, coreContext string, intentContext string, aiConfig *models.AIConfig, position *models.StockPosition, decisionCtx *services.DecisionSupportContext) []models.ChatMessage {
 	allAgents := a.strategyService.GetEnabledAgents()
 	chatReq := meeting.ChatRequest{
-		StockCode: stockCode,
-		Stock:     stock,
-		Query:     query,
-		AllAgents: allAgents,
-		Position:  position,
+		Stock:         stock,
+		Query:         query,
+		ReplyContent:  a.buildRecentDiscussionContext(stockCode, query),
+		AllAgents:     allAgents,
+		CoreContext:   coreContext,
+		IntentContext: intentContext,
+		Position:      position,
 	}
 
 	// 响应回调：每次发言完成后推送
 	respCallback := func(resp meeting.ChatResponse) {
 		msg := models.ChatMessage{
-			AgentID:     resp.AgentID,
-			AgentName:   resp.AgentName,
-			Role:        resp.Role,
-			Content:     resp.Content,
-			Round:       resp.Round,
-			MsgType:     resp.MsgType,
-			Error:       resp.Error,
-			MeetingMode: resp.MeetingMode,
+			AgentID:   resp.AgentID,
+			AgentName: resp.AgentName,
+			Role:      resp.Role,
+			Content:   resp.Content,
+			Round:     resp.Round,
+			MsgType:   resp.MsgType,
 		}
 		a.sessionService.AddMessage(stockCode, msg)
 		runtime.EventsEmit(a.ctx, "meeting:message:"+stockCode, msg)
@@ -884,32 +953,37 @@ func (a *App) runSmartMeeting(ctx context.Context, stockCode string, stock model
 	var messages []models.ChatMessage
 	for _, resp := range responses {
 		messages = append(messages, models.ChatMessage{
-			AgentID:     resp.AgentID,
-			AgentName:   resp.AgentName,
-			Role:        resp.Role,
-			Content:     resp.Content,
-			Round:       resp.Round,
-			MsgType:     resp.MsgType,
-			Error:       resp.Error,
-			MeetingMode: resp.MeetingMode,
+			AgentID:   resp.AgentID,
+			AgentName: resp.AgentName,
+			Role:      resp.Role,
+			Content:   resp.Content,
+			Round:     resp.Round,
+			MsgType:   resp.MsgType,
 		})
+	}
+
+	summary := extractSummaryFromMeeting(responses)
+	if a.decisionService != nil && decisionCtx != nil && strings.TrimSpace(summary) != "" {
+		a.decisionService.RecordDecision(stockCode, stock, query, summary, *decisionCtx)
 	}
 	return messages
 }
 
 // runDirectMeeting 直接 @ 指定专家模式（带事件推送）
-func (a *App) runDirectMeeting(ctx context.Context, req MeetingMessageRequest, stock models.Stock, aiConfig *models.AIConfig, position *models.StockPosition) []models.ChatMessage {
+func (a *App) runDirectMeeting(ctx context.Context, req MeetingMessageRequest, stock models.Stock, coreContext string, intentContext string, aiConfig *models.AIConfig, position *models.StockPosition, decisionCtx *services.DecisionSupportContext) []models.ChatMessage {
 	agentConfigs := a.strategyService.GetAgentsByIDs(req.MentionIds)
 	if len(agentConfigs) == 0 {
 		return []models.ChatMessage{}
 	}
 
 	chatReq := meeting.ChatRequest{
-		Stock:        stock,
-		Agents:       agentConfigs,
-		Query:        req.Content,
-		ReplyContent: req.ReplyContent,
-		Position:     position,
+		Stock:         stock,
+		Agents:        agentConfigs,
+		Query:         req.Content,
+		ReplyContent:  req.ReplyContent,
+		CoreContext:   coreContext,
+		IntentContext: intentContext,
+		Position:      position,
 	}
 
 	responses, err := a.meetingService.SendMessage(ctx, aiConfig, chatReq)
@@ -919,7 +993,210 @@ func (a *App) runDirectMeeting(ctx context.Context, req MeetingMessageRequest, s
 	}
 
 	// 转换并保存响应，同时推送事件
-	return a.convertSaveAndEmitResponses(req.StockCode, responses, req.ReplyToId)
+	messages := a.convertSaveAndEmitResponses(req.StockCode, responses, req.ReplyToId)
+
+	// 直连模式也生成小韭菜总结
+	if a.meetingService != nil {
+		summary, err := a.meetingService.SummarizeDirect(ctx, aiConfig, &stock, req.Content, responses, coreContext, intentContext, position)
+		if err != nil {
+			log.Warn("direct summary error: %v", err)
+		} else if summary != "" {
+			msg := models.ChatMessage{
+				AgentID:   "moderator",
+				AgentName: "小韭菜",
+				Role:      "会议主持",
+				Content:   summary,
+				Round:     1,
+				MsgType:   "summary",
+			}
+			a.sessionService.AddMessage(req.StockCode, msg)
+			runtime.EventsEmit(a.ctx, "meeting:message:"+req.StockCode, msg)
+			messages = append(messages, msg)
+		}
+		if a.decisionService != nil && decisionCtx != nil && strings.TrimSpace(summary) != "" {
+			a.decisionService.RecordDecision(req.StockCode, stock, req.Content, summary, *decisionCtx)
+		}
+	}
+
+	return messages
+}
+
+func (a *App) buildCoreContext(stockCode string) string {
+	_, contextText := a.buildCoreContextPack(stockCode)
+	return contextText
+}
+
+func (a *App) buildCoreContextPack(stockCode string) (*models.CoreDataPack, string) {
+	if a.coreDataService == nil {
+		return nil, ""
+	}
+	pack, err := a.coreDataService.GetCoreDataPack(stockCode)
+	if err != nil {
+		log.Warn("核心数据包获取失败: %v", err)
+		return nil, ""
+	}
+	contextText := a.coreDataService.BuildCoreContext(pack)
+	return &pack, contextText
+}
+
+func (a *App) buildIntentContext(stockCode string, query string) string {
+	if a.intentDataService == nil {
+		return ""
+	}
+	return a.intentDataService.BuildIntentContext(stockCode, query)
+}
+
+func (a *App) buildDecisionSupportContext(stockCode string, stock models.Stock, query string, position *models.StockPosition, corePack *models.CoreDataPack) (*services.DecisionSupportContext, string) {
+	if a.decisionService == nil {
+		return nil, ""
+	}
+	ctx, text := a.decisionService.BuildContextWithCorePack(stockCode, stock, query, position, corePack)
+	return &ctx, text
+}
+
+func mergeStockSnapshot(base models.Stock, latest models.Stock) models.Stock {
+	if strings.TrimSpace(latest.Symbol) != "" {
+		base.Symbol = latest.Symbol
+	}
+	if strings.TrimSpace(latest.Name) != "" {
+		base.Name = latest.Name
+	}
+	if latest.Price != 0 {
+		base.Price = latest.Price
+	}
+	if latest.Change != 0 {
+		base.Change = latest.Change
+	}
+	if latest.ChangePercent != 0 {
+		base.ChangePercent = latest.ChangePercent
+	}
+	if latest.Volume != 0 {
+		base.Volume = latest.Volume
+	}
+	if latest.Amount != 0 {
+		base.Amount = latest.Amount
+	}
+	if strings.TrimSpace(latest.MarketCap) != "" {
+		base.MarketCap = latest.MarketCap
+	}
+	if strings.TrimSpace(latest.Sector) != "" {
+		base.Sector = latest.Sector
+	}
+	if latest.Open != 0 {
+		base.Open = latest.Open
+	}
+	if latest.High != 0 {
+		base.High = latest.High
+	}
+	if latest.Low != 0 {
+		base.Low = latest.Low
+	}
+	if latest.PreClose != 0 {
+		base.PreClose = latest.PreClose
+	}
+	return base
+}
+
+func mergeContextText(base string, extra string) string {
+	base = strings.TrimSpace(base)
+	extra = strings.TrimSpace(extra)
+	if base == "" {
+		return extra
+	}
+	if extra == "" {
+		return base
+	}
+	return base + "\n" + extra
+}
+
+func extractSummaryFromMeeting(responses []meeting.ChatResponse) string {
+	if len(responses) == 0 {
+		return ""
+	}
+
+	for i := len(responses) - 1; i >= 0; i-- {
+		resp := responses[i]
+		if strings.TrimSpace(resp.Content) == "" {
+			continue
+		}
+		if resp.MsgType == "summary" {
+			return resp.Content
+		}
+	}
+
+	for i := len(responses) - 1; i >= 0; i-- {
+		resp := responses[i]
+		if strings.TrimSpace(resp.Content) == "" {
+			continue
+		}
+		if resp.AgentID == "moderator" {
+			return resp.Content
+		}
+	}
+
+	return responses[len(responses)-1].Content
+}
+
+func (a *App) buildRecentDiscussionContext(stockCode string, currentQuery string) string {
+	if a.sessionService == nil {
+		return ""
+	}
+	messages := a.sessionService.GetMessages(stockCode)
+	if len(messages) == 0 {
+		return ""
+	}
+
+	trimmedQuery := strings.TrimSpace(currentQuery)
+	lines := make([]string, 0, 10)
+	for index := len(messages) - 1; index >= 0 && len(lines) < 10; index-- {
+		msg := messages[index]
+		content := strings.TrimSpace(msg.Content)
+		if content == "" {
+			continue
+		}
+		if msg.AgentID == "user" && trimmedQuery != "" && content == trimmedQuery {
+			continue
+		}
+
+		name := strings.TrimSpace(msg.AgentName)
+		if name == "" {
+			name = strings.TrimSpace(msg.Role)
+		}
+		if name == "" {
+			name = msg.AgentID
+		}
+		lines = append(lines, fmt.Sprintf("%s：%s", name, content))
+	}
+
+	if len(lines) == 0 {
+		return ""
+	}
+
+	for left, right := 0, len(lines)-1; left < right; left, right = left+1, right-1 {
+		lines[left], lines[right] = lines[right], lines[left]
+	}
+
+	return "【上一轮讨论记录（最近消息）】\n" + strings.Join(lines, "\n")
+}
+
+func (a *App) buildSupplementContext(stock models.Stock, query string, history []meeting.DiscussionEntry) string {
+	if a.intentDataService == nil {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString(query)
+	for _, entry := range history {
+		if entry.Content == "" {
+			continue
+		}
+		sb.WriteString(" ")
+		sb.WriteString(entry.Content)
+	}
+	text := sb.String()
+	if len(text) > 2000 {
+		text = text[:2000]
+	}
+	return a.intentDataService.BuildIntentContext(stock.Symbol, text)
 }
 
 // convertSaveAndEmitResponses 转换响应、保存并推送事件（统一体验）
@@ -927,15 +1204,13 @@ func (a *App) convertSaveAndEmitResponses(stockCode string, responses []meeting.
 	var messages []models.ChatMessage
 	for _, resp := range responses {
 		msg := models.ChatMessage{
-			AgentID:     resp.AgentID,
-			AgentName:   resp.AgentName,
-			Role:        resp.Role,
-			Content:     resp.Content,
-			ReplyTo:     replyTo,
-			Round:       resp.Round,
-			MsgType:     resp.MsgType,
-			Error:       resp.Error,
-			MeetingMode: resp.MeetingMode,
+			AgentID:   resp.AgentID,
+			AgentName: resp.AgentName,
+			Role:      resp.Role,
+			Content:   resp.Content,
+			ReplyTo:   replyTo,
+			Round:     resp.Round,
+			MsgType:   resp.MsgType,
 		}
 		// 保存单条消息
 		a.sessionService.AddMessage(stockCode, msg)
@@ -944,131 +1219,6 @@ func (a *App) convertSaveAndEmitResponses(stockCode string, responses []meeting.
 		messages = append(messages, msg)
 	}
 	return messages
-}
-
-// RetryAgent 重试单个失败的专家（前端手动触发）
-func (a *App) RetryAgent(stockCode string, agentId string, query string) models.ChatMessage {
-	// 获取股票数据
-	stocks, _ := a.marketService.GetStockRealTimeData(stockCode)
-	var stock models.Stock
-	if len(stocks) > 0 {
-		stock = stocks[0]
-	}
-
-	// 获取 AI 配置
-	config := a.configService.GetConfig()
-	aiConfig := a.getDefaultAIConfig(config)
-	if aiConfig == nil {
-		log.Warn("RetryAgent: no AI config")
-		return models.ChatMessage{AgentID: agentId, Error: "未配置 AI 服务"}
-	}
-
-	// 获取专家配置
-	agents := a.strategyService.GetAgentsByIDs([]string{agentId})
-	if len(agents) == 0 {
-		log.Warn("RetryAgent: agent not found: %s", agentId)
-		return models.ChatMessage{AgentID: agentId, Error: "专家不存在"}
-	}
-	agentCfg := agents[0]
-
-	position := a.sessionService.GetPosition(stockCode)
-
-	// 进度回调
-	progressCallback := func(event meeting.ProgressEvent) {
-		runtime.EventsEmit(a.ctx, "meeting:progress:"+stockCode, event)
-	}
-
-	resp, err := a.meetingService.RetrySingleAgent(a.ctx, aiConfig, &agentCfg, &stock, query, progressCallback, position)
-
-	msg := models.ChatMessage{
-		AgentID:     resp.AgentID,
-		AgentName:   resp.AgentName,
-		Role:        resp.Role,
-		Content:     resp.Content,
-		Round:       resp.Round,
-		MsgType:     resp.MsgType,
-		Error:       resp.Error,
-		MeetingMode: resp.MeetingMode,
-	}
-
-	if err != nil {
-		log.Error("RetryAgent failed: %v", err)
-		runtime.EventsEmit(a.ctx, "meeting:message:"+stockCode, msg)
-		return msg
-	}
-
-	// 成功：保存并推送
-	a.sessionService.AddMessage(stockCode, msg)
-	runtime.EventsEmit(a.ctx, "meeting:message:"+stockCode, msg)
-	return msg
-}
-
-// RetryAgentAndContinue 重试失败专家并继续执行剩余专家（前端手动触发）
-func (a *App) RetryAgentAndContinue(stockCode string) []models.ChatMessage {
-	if !a.meetingService.HasInterruptedMeeting(stockCode) {
-		log.Warn("RetryAgentAndContinue: no interrupted meeting for %s", stockCode)
-		return []models.ChatMessage{}
-	}
-
-	// 创建可取消的 context
-	meetingCtx, cancel := context.WithCancel(a.ctx)
-	a.meetingCancelsMu.Lock()
-	a.meetingCancels[stockCode] = cancel
-	a.meetingCancelsMu.Unlock()
-
-	defer func() {
-		a.meetingCancelsMu.Lock()
-		delete(a.meetingCancels, stockCode)
-		a.meetingCancelsMu.Unlock()
-	}()
-
-	// 响应回调
-	respCallback := func(resp meeting.ChatResponse) {
-		msg := models.ChatMessage{
-			AgentID:     resp.AgentID,
-			AgentName:   resp.AgentName,
-			Role:        resp.Role,
-			Content:     resp.Content,
-			Round:       resp.Round,
-			MsgType:     resp.MsgType,
-			Error:       resp.Error,
-			MeetingMode: resp.MeetingMode,
-		}
-		a.sessionService.AddMessage(stockCode, msg)
-		runtime.EventsEmit(a.ctx, "meeting:message:"+stockCode, msg)
-	}
-
-	// 进度回调
-	progressCallback := func(event meeting.ProgressEvent) {
-		runtime.EventsEmit(a.ctx, "meeting:progress:"+stockCode, event)
-	}
-
-	responses, err := a.meetingService.ContinueMeeting(meetingCtx, stockCode, respCallback, progressCallback)
-	if err != nil {
-		log.Error("RetryAgentAndContinue error: %v", err)
-		return []models.ChatMessage{}
-	}
-
-	var messages []models.ChatMessage
-	for _, resp := range responses {
-		messages = append(messages, models.ChatMessage{
-			AgentID:     resp.AgentID,
-			AgentName:   resp.AgentName,
-			Role:        resp.Role,
-			Content:     resp.Content,
-			Round:       resp.Round,
-			MsgType:     resp.MsgType,
-			Error:       resp.Error,
-			MeetingMode: resp.MeetingMode,
-		})
-	}
-	return messages
-}
-
-// CancelInterruptedMeeting 取消中断的会议（用户放弃重试）
-func (a *App) CancelInterruptedMeeting(stockCode string) bool {
-	a.meetingService.CancelInterruptedMeeting(stockCode)
-	return true
 }
 
 // ========== News API ==========
@@ -1167,35 +1317,13 @@ func (a *App) TestMCPConnection(serverID string) *mcp.ServerStatus {
 }
 
 // TestAIConnection 测试 AI 配置连通性
-// 连接成功后自动检测是否支持 system role，并持久化结果
 func (a *App) TestAIConnection(config models.AIConfig) string {
 	factory := adk.NewModelFactory()
-	ctx := context.Background()
-	if err := factory.TestConnection(ctx, &config); err != nil {
+	if err := factory.TestConnection(context.Background(), &config); err != nil {
 		log.Error("AI 连接测试失败 [%s]: %v", config.Name, err)
 		return err.Error()
 	}
 	log.Info("AI 连接测试成功 [%s]", config.Name)
-
-	// 连接成功后，探测是否支持 system role
-	noSystemRole := factory.DetectSystemRoleSupport(ctx, &config)
-	config.NoSystemRole = noSystemRole
-
-	// 持久化检测结果到配置
-	if appConfig := a.configService.GetConfig(); appConfig != nil {
-		for i := range appConfig.AIConfigs {
-			if appConfig.AIConfigs[i].ID == config.ID {
-				appConfig.AIConfigs[i].NoSystemRole = noSystemRole
-				if err := a.configService.UpdateConfig(appConfig); err != nil {
-					log.Warn("保存 NoSystemRole 检测结果失败: %v", err)
-				} else {
-					log.Info("模型 [%s] NoSystemRole=%v 已保存", config.Name, noSystemRole)
-				}
-				break
-			}
-		}
-	}
-
 	return "success"
 }
 
@@ -1248,67 +1376,6 @@ func (a *App) GetAllHotTrends() []hottrend.HotTrendResult {
 	return a.hotTrendService.GetAllHotTrends()
 }
 
-// ========== Update API ==========
-
-// CheckForUpdate 检查更新
-func (a *App) CheckForUpdate() services.UpdateInfo {
-	if a.updateService == nil {
-		return services.UpdateInfo{Error: "更新服务未初始化"}
-	}
-	return a.updateService.CheckForUpdate()
-}
-
-// DoUpdate 执行更新
-func (a *App) DoUpdate() string {
-	if a.updateService == nil {
-		return "更新服务未初始化"
-	}
-	if err := a.updateService.Update(); err != nil {
-		return err.Error()
-	}
-	return "success"
-}
-
-// RestartApp 重启应用
-func (a *App) RestartApp() string {
-	if a.updateService == nil {
-		return "更新服务未初始化"
-	}
-	if err := a.updateService.RestartApplication(); err != nil {
-		return err.Error()
-	}
-	return "success"
-}
-
-// GetCurrentVersion 获取当前版本
-func (a *App) GetCurrentVersion() string {
-	if a.updateService == nil {
-		return "unknown"
-	}
-	return a.updateService.GetCurrentVersion()
-}
-
-// GetTradeDates 获取交易日列表
-func (a *App) GetTradeDates(days int) []string {
-	if a.marketService == nil {
-		return nil
-	}
-	dates, err := a.marketService.GetTradeDates(days)
-	if err != nil {
-		return nil
-	}
-	return dates
-}
-
-// GetTradingSchedule 获取交易时间表
-func (a *App) GetTradingSchedule() *services.TradingSchedule {
-	if a.marketService == nil {
-		return nil
-	}
-	schedule := a.marketService.GetTradingSchedule()
-	return &schedule
-}
-
 // GetLongHuBangList 获取龙虎榜列表
 func (a *App) GetLongHuBangList(pageSize, pageNumber int, tradeDate string) *services.LongHuBangListResult {
 	if a.longHuBangService == nil {
@@ -1335,9 +1402,120 @@ func (a *App) GetLongHuBangDetail(code, tradeDate string) []models.LongHuBangDet
 	return details
 }
 
-// NotifyFrontendReady 前端通知已准备好，开始推送数据
-func (a *App) NotifyFrontendReady() {
-	if a.marketPusher != nil {
-		a.marketPusher.SetReady()
+// GetBoardFundFlow 获取板块资金流（行业/概念/地域）
+func (a *App) GetBoardFundFlow(category string, page, pageSize int) models.BoardFundFlowList {
+	if a.marketService == nil {
+		return models.BoardFundFlowList{}
+	}
+	data, err := a.marketService.GetBoardFundFlowList(category, page, pageSize)
+	if err != nil {
+		log.Error("获取板块资金流失败: %v", err)
+		return models.BoardFundFlowList{Category: category}
+	}
+	return data
+}
+
+// GetStockMoves 获取盘口异动列表（涨速/涨跌幅/资金/换手）
+func (a *App) GetStockMoves(moveType string, page, pageSize int) models.StockMoveList {
+	if a.marketService == nil {
+		return models.StockMoveList{MoveType: moveType}
+	}
+	data, err := a.marketService.GetStockMovesList(moveType, page, pageSize)
+	if err != nil {
+		log.Error("获取盘口异动失败: %v", err)
+		return models.StockMoveList{MoveType: moveType}
+	}
+	return data
+}
+
+// GetBoardLeaders 获取板块龙头推荐（综合涨幅与主力资金评分）
+func (a *App) GetBoardLeaders(boardCode string, limit int) models.BoardLeaderList {
+	if a.marketService == nil {
+		return models.BoardLeaderList{BoardCode: boardCode}
+	}
+	data, err := a.marketService.GetBoardLeaders(boardCode, limit)
+	if err != nil {
+		log.Error("获取板块龙头失败: %v", err)
+		return models.BoardLeaderList{BoardCode: boardCode}
+	}
+	return data
+}
+
+// CheckForUpdate 检查是否有可用更新
+func (a *App) CheckForUpdate() services.UpdateInfo {
+	if a.updateService == nil {
+		return services.UpdateInfo{Error: "更新服务未初始化"}
+	}
+	return a.updateService.CheckForUpdate()
+}
+
+// DoUpdate 执行更新
+func (a *App) DoUpdate() string {
+	if a.updateService == nil {
+		return "更新服务未初始化"
+	}
+	if err := a.updateService.Update(); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// RestartApp 重启应用
+func (a *App) RestartApp() string {
+	if a.updateService == nil {
+		return "更新服务未初始化"
+	}
+	if err := a.updateService.RestartApplication(); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// GetCurrentVersion 获取当前版本
+func (a *App) GetCurrentVersion() string {
+	if a.updateService == nil {
+		return "0.0.0"
+	}
+	return a.updateService.GetCurrentVersion()
+}
+
+// TradingPeriod 交易时段
+type TradingPeriod struct {
+	Status    string `json:"status"`
+	Text      string `json:"text"`
+	StartTime string `json:"startTime"`
+	EndTime   string `json:"endTime"`
+}
+
+// TradingSchedule 交易时间表
+type TradingSchedule struct {
+	IsTradeDay  bool            `json:"isTradeDay"`
+	HolidayName string          `json:"holidayName"`
+	Periods     []TradingPeriod `json:"periods"`
+}
+
+// GetTradingSchedule 获取交易时间表
+func (a *App) GetTradingSchedule() TradingSchedule {
+	now := time.Now()
+	weekday := now.Weekday()
+
+	// 周末休市
+	if weekday == time.Saturday || weekday == time.Sunday {
+		return TradingSchedule{
+			IsTradeDay:  false,
+			HolidayName: "",
+			Periods:     []TradingPeriod{},
+		}
+	}
+
+	// 交易日的时间段
+	return TradingSchedule{
+		IsTradeDay:  true,
+		HolidayName: "",
+		Periods: []TradingPeriod{
+			{Status: "pre_market", Text: "集合竞价", StartTime: "09:15", EndTime: "09:25"},
+			{Status: "trading", Text: "早盘交易", StartTime: "09:30", EndTime: "11:30"},
+			{Status: "trading", Text: "午盘交易", StartTime: "13:00", EndTime: "15:00"},
+		},
 	}
 }

@@ -186,6 +186,58 @@ export namespace main {
 	        this.replyContent = source["replyContent"];
 	    }
 	}
+	export class TradingPeriod {
+	    status: string;
+	    text: string;
+	    startTime: string;
+	    endTime: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TradingPeriod(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.status = source["status"];
+	        this.text = source["text"];
+	        this.startTime = source["startTime"];
+	        this.endTime = source["endTime"];
+	    }
+	}
+	export class TradingSchedule {
+	    isTradeDay: boolean;
+	    holidayName: string;
+	    periods: TradingPeriod[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TradingSchedule(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.isTradeDay = source["isTradeDay"];
+	        this.holidayName = source["holidayName"];
+	        this.periods = this.convertValues(source["periods"], TradingPeriod);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 
 }
 
@@ -242,7 +294,6 @@ export namespace models {
 	    timeout: number;
 	    isDefault: boolean;
 	    useResponses: boolean;
-	    noSystemRole: boolean;
 	    project: string;
 	    location: string;
 	    credentialsJson: string;
@@ -264,7 +315,6 @@ export namespace models {
 	        this.timeout = source["timeout"];
 	        this.isDefault = source["isDefault"];
 	        this.useResponses = source["useResponses"];
-	        this.noSystemRole = source["noSystemRole"];
 	        this.project = source["project"];
 	        this.location = source["location"];
 	        this.credentialsJson = source["credentialsJson"];
@@ -298,156 +348,6 @@ export namespace models {
 	        this.mcpServers = source["mcpServers"];
 	        this.enabled = source["enabled"];
 	        this.aiConfigId = source["aiConfigId"];
-	    }
-	}
-	export class KDJConfig {
-	    enabled: boolean;
-	    period: number;
-	    k: number;
-	    d: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new KDJConfig(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.enabled = source["enabled"];
-	        this.period = source["period"];
-	        this.k = source["k"];
-	        this.d = source["d"];
-	    }
-	}
-	export class RSIConfig {
-	    enabled: boolean;
-	    period: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new RSIConfig(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.enabled = source["enabled"];
-	        this.period = source["period"];
-	    }
-	}
-	export class MACDConfig {
-	    enabled: boolean;
-	    fast: number;
-	    slow: number;
-	    signal: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new MACDConfig(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.enabled = source["enabled"];
-	        this.fast = source["fast"];
-	        this.slow = source["slow"];
-	        this.signal = source["signal"];
-	    }
-	}
-	export class BOLLConfig {
-	    enabled: boolean;
-	    period: number;
-	    multiplier: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new BOLLConfig(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.enabled = source["enabled"];
-	        this.period = source["period"];
-	        this.multiplier = source["multiplier"];
-	    }
-	}
-	export class EMAConfig {
-	    enabled: boolean;
-	    periods: number[];
-	
-	    static createFrom(source: any = {}) {
-	        return new EMAConfig(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.enabled = source["enabled"];
-	        this.periods = source["periods"];
-	    }
-	}
-	export class MAConfig {
-	    enabled: boolean;
-	    periods: number[];
-	
-	    static createFrom(source: any = {}) {
-	        return new MAConfig(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.enabled = source["enabled"];
-	        this.periods = source["periods"];
-	    }
-	}
-	export class IndicatorConfig {
-	    ma: MAConfig;
-	    ema: EMAConfig;
-	    boll: BOLLConfig;
-	    macd: MACDConfig;
-	    rsi: RSIConfig;
-	    kdj: KDJConfig;
-	
-	    static createFrom(source: any = {}) {
-	        return new IndicatorConfig(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.ma = this.convertValues(source["ma"], MAConfig);
-	        this.ema = this.convertValues(source["ema"], EMAConfig);
-	        this.boll = this.convertValues(source["boll"], BOLLConfig);
-	        this.macd = this.convertValues(source["macd"], MACDConfig);
-	        this.rsi = this.convertValues(source["rsi"], RSIConfig);
-	        this.kdj = this.convertValues(source["kdj"], KDJConfig);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	export class OpenClawConfig {
-	    enabled: boolean;
-	    port: number;
-	    apiKey: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new OpenClawConfig(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.enabled = source["enabled"];
-	        this.port = source["port"];
-	        this.apiKey = source["apiKey"];
 	    }
 	}
 	export class LayoutConfig {
@@ -539,12 +439,14 @@ export namespace models {
 	    defaultAiId: string;
 	    strategyAiId: string;
 	    moderatorAiId: string;
+	    aiRetryCount: number;
+	    verboseAgentIO: boolean;
+	    agentSelectionStyle: string;
+	    enableSecondReview: boolean;
 	    mcpServers: MCPServerConfig[];
 	    memory: MemoryConfig;
 	    proxy: ProxyConfig;
 	    layout: LayoutConfig;
-	    openClaw: OpenClawConfig;
-	    indicators: IndicatorConfig;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -558,12 +460,698 @@ export namespace models {
 	        this.defaultAiId = source["defaultAiId"];
 	        this.strategyAiId = source["strategyAiId"];
 	        this.moderatorAiId = source["moderatorAiId"];
+	        this.aiRetryCount = source["aiRetryCount"];
+	        this.verboseAgentIO = source["verboseAgentIO"];
+	        this.agentSelectionStyle = source["agentSelectionStyle"];
+	        this.enableSecondReview = source["enableSecondReview"];
 	        this.mcpServers = this.convertValues(source["mcpServers"], MCPServerConfig);
 	        this.memory = this.convertValues(source["memory"], MemoryConfig);
 	        this.proxy = this.convertValues(source["proxy"], ProxyConfig);
 	        this.layout = this.convertValues(source["layout"], LayoutConfig);
-	        this.openClaw = this.convertValues(source["openClaw"], OpenClawConfig);
-	        this.indicators = this.convertValues(source["indicators"], IndicatorConfig);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class BoardFundFlowItem {
+	    code: string;
+	    name: string;
+	    price: number;
+	    changePercent: number;
+	    mainNetInflow: number;
+	    mainNetInflowRatio: number;
+	    superNetInflow: number;
+	    superNetInflowRatio: number;
+	    largeNetInflow: number;
+	    largeNetInflowRatio: number;
+	    mediumNetInflow: number;
+	    mediumNetInflowRatio: number;
+	    smallNetInflow: number;
+	    smallNetInflowRatio: number;
+	    updateTime?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BoardFundFlowItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.code = source["code"];
+	        this.name = source["name"];
+	        this.price = source["price"];
+	        this.changePercent = source["changePercent"];
+	        this.mainNetInflow = source["mainNetInflow"];
+	        this.mainNetInflowRatio = source["mainNetInflowRatio"];
+	        this.superNetInflow = source["superNetInflow"];
+	        this.superNetInflowRatio = source["superNetInflowRatio"];
+	        this.largeNetInflow = source["largeNetInflow"];
+	        this.largeNetInflowRatio = source["largeNetInflowRatio"];
+	        this.mediumNetInflow = source["mediumNetInflow"];
+	        this.mediumNetInflowRatio = source["mediumNetInflowRatio"];
+	        this.smallNetInflow = source["smallNetInflow"];
+	        this.smallNetInflowRatio = source["smallNetInflowRatio"];
+	        this.updateTime = source["updateTime"];
+	    }
+	}
+	export class BoardFundFlowList {
+	    category: string;
+	    items: BoardFundFlowItem[];
+	    total?: number;
+	    updateTime?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BoardFundFlowList(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.category = source["category"];
+	        this.items = this.convertValues(source["items"], BoardFundFlowItem);
+	        this.total = source["total"];
+	        this.updateTime = source["updateTime"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class BoardLeaderItem {
+	    rank: number;
+	    code: string;
+	    name: string;
+	    price: number;
+	    changePercent: number;
+	    turnoverRate?: number;
+	    mainNetInflow: number;
+	    mainNetInflowRatio: number;
+	    score: number;
+	    updateTime?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BoardLeaderItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.rank = source["rank"];
+	        this.code = source["code"];
+	        this.name = source["name"];
+	        this.price = source["price"];
+	        this.changePercent = source["changePercent"];
+	        this.turnoverRate = source["turnoverRate"];
+	        this.mainNetInflow = source["mainNetInflow"];
+	        this.mainNetInflowRatio = source["mainNetInflowRatio"];
+	        this.score = source["score"];
+	        this.updateTime = source["updateTime"];
+	    }
+	}
+	export class BoardLeaderList {
+	    boardCode: string;
+	    items: BoardLeaderItem[];
+	    updateTime?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BoardLeaderList(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.boardCode = source["boardCode"];
+	        this.items = this.convertValues(source["items"], BoardLeaderItem);
+	        this.updateTime = source["updateTime"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class BonusFinancing {
+	    dividend?: any[];
+	    annual?: any[];
+	    financing?: any[];
+	    allotment?: any[];
+	
+	    static createFrom(source: any = {}) {
+	        return new BonusFinancing(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dividend = source["dividend"];
+	        this.annual = source["annual"];
+	        this.financing = source["financing"];
+	        this.allotment = source["allotment"];
+	    }
+	}
+	export class BusinessAnalysis {
+	    scope?: any[];
+	    composition?: any[];
+	    review?: any[];
+	
+	    static createFrom(source: any = {}) {
+	        return new BusinessAnalysis(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.scope = source["scope"];
+	        this.composition = source["composition"];
+	        this.review = source["review"];
+	    }
+	}
+	export class ChatMessage {
+	    id: string;
+	    agentId: string;
+	    agentName: string;
+	    role: string;
+	    content: string;
+	    timestamp: number;
+	    replyTo?: string;
+	    mentions?: string[];
+	    round?: number;
+	    msgType?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatMessage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.agentId = source["agentId"];
+	        this.agentName = source["agentName"];
+	        this.role = source["role"];
+	        this.content = source["content"];
+	        this.timestamp = source["timestamp"];
+	        this.replyTo = source["replyTo"];
+	        this.mentions = source["mentions"];
+	        this.round = source["round"];
+	        this.msgType = source["msgType"];
+	    }
+	}
+	export class EquityPledge {
+	    records?: any[];
+	    latest?: Record<string, any>;
+	
+	    static createFrom(source: any = {}) {
+	        return new EquityPledge(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.records = source["records"];
+	        this.latest = source["latest"];
+	    }
+	}
+	export class F10CapitalOperation {
+	    raiseSources?: any[];
+	    projectProgress?: any[];
+	
+	    static createFrom(source: any = {}) {
+	        return new F10CapitalOperation(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.raiseSources = source["raiseSources"];
+	        this.projectProgress = source["projectProgress"];
+	    }
+	}
+	export class F10CoreThemes {
+	    boardTypes?: any[];
+	    themes?: any[];
+	    history?: any[];
+	    selectedBoardReasons?: any[];
+	    popularLeaders?: any[];
+	
+	    static createFrom(source: any = {}) {
+	        return new F10CoreThemes(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.boardTypes = source["boardTypes"];
+	        this.themes = source["themes"];
+	        this.history = source["history"];
+	        this.selectedBoardReasons = source["selectedBoardReasons"];
+	        this.popularLeaders = source["popularLeaders"];
+	    }
+	}
+	export class F10EquityStructure {
+	    latest?: any[];
+	    history?: any[];
+	    composition?: any[];
+	
+	    static createFrom(source: any = {}) {
+	        return new F10EquityStructure(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.latest = source["latest"];
+	        this.history = source["history"];
+	        this.composition = source["composition"];
+	    }
+	}
+	export class F10IndustryCompareMetrics {
+	    valuation?: any[];
+	    performance?: any[];
+	    growth?: any[];
+	
+	    static createFrom(source: any = {}) {
+	        return new F10IndustryCompareMetrics(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.valuation = source["valuation"];
+	        this.performance = source["performance"];
+	        this.growth = source["growth"];
+	    }
+	}
+	export class F10MainIndicators {
+	    latest?: any[];
+	    yearly?: any[];
+	    quarterly?: any[];
+	
+	    static createFrom(source: any = {}) {
+	        return new F10MainIndicators(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.latest = source["latest"];
+	        this.yearly = source["yearly"];
+	        this.quarterly = source["quarterly"];
+	    }
+	}
+	export class F10Management {
+	    managementList?: any[];
+	    salaryDetails?: any[];
+	    holdingChanges?: any[];
+	
+	    static createFrom(source: any = {}) {
+	        return new F10Management(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.managementList = source["managementList"];
+	        this.salaryDetails = source["salaryDetails"];
+	        this.holdingChanges = source["holdingChanges"];
+	    }
+	}
+	export class F10OperationsRequired {
+	    latestIndicators?: Record<string, any>;
+	    latestIndicatorsExtra?: Record<string, any>;
+	    latestIndicatorsQuote?: Record<string, any>;
+	    eventReminders?: any[];
+	    news?: any[];
+	    announcements?: any[];
+	    shareholderAnalysis?: any[];
+	    dragonTigerList?: any[];
+	    blockTrades?: any[];
+	    marginTrading?: any[];
+	    mainIndicators?: any[];
+	    sectorTags?: any[];
+	    coreThemes?: any[];
+	    institutionForecast?: any[];
+	    forecastChart?: any[];
+	    reportSummary?: any[];
+	    researchReports?: any[];
+	    forecastRevisionTrack?: any[];
+	
+	    static createFrom(source: any = {}) {
+	        return new F10OperationsRequired(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.latestIndicators = source["latestIndicators"];
+	        this.latestIndicatorsExtra = source["latestIndicatorsExtra"];
+	        this.latestIndicatorsQuote = source["latestIndicatorsQuote"];
+	        this.eventReminders = source["eventReminders"];
+	        this.news = source["news"];
+	        this.announcements = source["announcements"];
+	        this.shareholderAnalysis = source["shareholderAnalysis"];
+	        this.dragonTigerList = source["dragonTigerList"];
+	        this.blockTrades = source["blockTrades"];
+	        this.marginTrading = source["marginTrading"];
+	        this.mainIndicators = source["mainIndicators"];
+	        this.sectorTags = source["sectorTags"];
+	        this.coreThemes = source["coreThemes"];
+	        this.institutionForecast = source["institutionForecast"];
+	        this.forecastChart = source["forecastChart"];
+	        this.reportSummary = source["reportSummary"];
+	        this.researchReports = source["researchReports"];
+	        this.forecastRevisionTrack = source["forecastRevisionTrack"];
+	    }
+	}
+	export class F10ValuationTrend {
+	    source?: string;
+	    range?: string;
+	    requestedRange?: string;
+	    fallback?: boolean;
+	    dateType?: number;
+	    labels?: Record<string, string>;
+	    pe?: any[];
+	    pb?: any[];
+	    ps?: any[];
+	    pcf?: any[];
+	
+	    static createFrom(source: any = {}) {
+	        return new F10ValuationTrend(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.source = source["source"];
+	        this.range = source["range"];
+	        this.requestedRange = source["requestedRange"];
+	        this.fallback = source["fallback"];
+	        this.dateType = source["dateType"];
+	        this.labels = source["labels"];
+	        this.pe = source["pe"];
+	        this.pb = source["pb"];
+	        this.ps = source["ps"];
+	        this.pcf = source["pcf"];
+	    }
+	}
+	export class F10RelatedStocks {
+	    industryRankings?: any[];
+	    conceptRelations?: any[];
+	
+	    static createFrom(source: any = {}) {
+	        return new F10RelatedStocks(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.industryRankings = source["industryRankings"];
+	        this.conceptRelations = source["conceptRelations"];
+	    }
+	}
+	export class StockValuation {
+	    price?: number;
+	    peTtm?: number;
+	    pb?: number;
+	    totalMarketCap?: number;
+	    floatMarketCap?: number;
+	    turnoverRate?: number;
+	    amplitude?: number;
+	    totalShares?: number;
+	    floatShares?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new StockValuation(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.price = source["price"];
+	        this.peTtm = source["peTtm"];
+	        this.pb = source["pb"];
+	        this.totalMarketCap = source["totalMarketCap"];
+	        this.floatMarketCap = source["floatMarketCap"];
+	        this.turnoverRate = source["turnoverRate"];
+	        this.amplitude = source["amplitude"];
+	        this.totalShares = source["totalShares"];
+	        this.floatShares = source["floatShares"];
+	    }
+	}
+	export class StockBuyback {
+	    records?: any[];
+	    latest?: Record<string, any>;
+	
+	    static createFrom(source: any = {}) {
+	        return new StockBuyback(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.records = source["records"];
+	        this.latest = source["latest"];
+	    }
+	}
+	export class ShareholderChanges {
+	    records?: any[];
+	    latest?: Record<string, any>;
+	
+	    static createFrom(source: any = {}) {
+	        return new ShareholderChanges(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.records = source["records"];
+	        this.latest = source["latest"];
+	    }
+	}
+	export class LockupRelease {
+	    records?: any[];
+	    latest?: Record<string, any>;
+	
+	    static createFrom(source: any = {}) {
+	        return new LockupRelease(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.records = source["records"];
+	        this.latest = source["latest"];
+	    }
+	}
+	export class ShareholderNumbers {
+	    records?: any[];
+	    latest?: Record<string, any>;
+	
+	    static createFrom(source: any = {}) {
+	        return new ShareholderNumbers(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.records = source["records"];
+	        this.latest = source["latest"];
+	    }
+	}
+	export class StockPeer {
+	    symbol: string;
+	    name: string;
+	    market?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new StockPeer(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.symbol = source["symbol"];
+	        this.name = source["name"];
+	        this.market = source["market"];
+	    }
+	}
+	export class IndustryCompare {
+	    industry?: string;
+	    peers?: StockPeer[];
+	
+	    static createFrom(source: any = {}) {
+	        return new IndustryCompare(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.industry = source["industry"];
+	        this.peers = this.convertValues(source["peers"], StockPeer);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class InstitutionalHoldings {
+	    topHolders?: any[];
+	    controller?: Record<string, any>;
+	
+	    static createFrom(source: any = {}) {
+	        return new InstitutionalHoldings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.topHolders = source["topHolders"];
+	        this.controller = source["controller"];
+	    }
+	}
+	export class FundFlowSeries {
+	    fields?: string[];
+	    lines?: string[][];
+	    labels?: Record<string, string>;
+	    latest?: Record<string, any>;
+	
+	    static createFrom(source: any = {}) {
+	        return new FundFlowSeries(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.fields = source["fields"];
+	        this.lines = source["lines"];
+	        this.labels = source["labels"];
+	        this.latest = source["latest"];
+	    }
+	}
+	export class PerformanceEvents {
+	    forecast?: any[];
+	    express?: any[];
+	    schedule?: any[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PerformanceEvents(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.forecast = source["forecast"];
+	        this.express = source["express"];
+	        this.schedule = source["schedule"];
+	    }
+	}
+	export class FinancialStatements {
+	    income?: any[];
+	    balance?: any[];
+	    cashflow?: any[];
+	
+	    static createFrom(source: any = {}) {
+	        return new FinancialStatements(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.income = source["income"];
+	        this.balance = source["balance"];
+	        this.cashflow = source["cashflow"];
+	    }
+	}
+	export class F10Overview {
+	    code: string;
+	    updatedAt?: string;
+	    source?: string;
+	    company?: Record<string, any>;
+	    financials?: FinancialStatements;
+	    performance?: PerformanceEvents;
+	    fundFlow?: FundFlowSeries;
+	    institutions?: InstitutionalHoldings;
+	    industry?: IndustryCompare;
+	    bonus?: BonusFinancing;
+	    business?: BusinessAnalysis;
+	    shareholders?: ShareholderNumbers;
+	    pledge?: EquityPledge;
+	    lockup?: LockupRelease;
+	    holderChange?: ShareholderChanges;
+	    buyback?: StockBuyback;
+	    valuation?: StockValuation;
+	    operations?: F10OperationsRequired;
+	    coreThemes?: F10CoreThemes;
+	    industryMetrics?: F10IndustryCompareMetrics;
+	    mainIndicators?: F10MainIndicators;
+	    management?: F10Management;
+	    capitalOperation?: F10CapitalOperation;
+	    equityStructure?: F10EquityStructure;
+	    relatedStocks?: F10RelatedStocks;
+	    valuationTrend?: F10ValuationTrend;
+	    errors?: Record<string, string>;
+	
+	    static createFrom(source: any = {}) {
+	        return new F10Overview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.code = source["code"];
+	        this.updatedAt = source["updatedAt"];
+	        this.source = source["source"];
+	        this.company = source["company"];
+	        this.financials = this.convertValues(source["financials"], FinancialStatements);
+	        this.performance = this.convertValues(source["performance"], PerformanceEvents);
+	        this.fundFlow = this.convertValues(source["fundFlow"], FundFlowSeries);
+	        this.institutions = this.convertValues(source["institutions"], InstitutionalHoldings);
+	        this.industry = this.convertValues(source["industry"], IndustryCompare);
+	        this.bonus = this.convertValues(source["bonus"], BonusFinancing);
+	        this.business = this.convertValues(source["business"], BusinessAnalysis);
+	        this.shareholders = this.convertValues(source["shareholders"], ShareholderNumbers);
+	        this.pledge = this.convertValues(source["pledge"], EquityPledge);
+	        this.lockup = this.convertValues(source["lockup"], LockupRelease);
+	        this.holderChange = this.convertValues(source["holderChange"], ShareholderChanges);
+	        this.buyback = this.convertValues(source["buyback"], StockBuyback);
+	        this.valuation = this.convertValues(source["valuation"], StockValuation);
+	        this.operations = this.convertValues(source["operations"], F10OperationsRequired);
+	        this.coreThemes = this.convertValues(source["coreThemes"], F10CoreThemes);
+	        this.industryMetrics = this.convertValues(source["industryMetrics"], F10IndustryCompareMetrics);
+	        this.mainIndicators = this.convertValues(source["mainIndicators"], F10MainIndicators);
+	        this.management = this.convertValues(source["management"], F10Management);
+	        this.capitalOperation = this.convertValues(source["capitalOperation"], F10CapitalOperation);
+	        this.equityStructure = this.convertValues(source["equityStructure"], F10EquityStructure);
+	        this.relatedStocks = this.convertValues(source["relatedStocks"], F10RelatedStocks);
+	        this.valuationTrend = this.convertValues(source["valuationTrend"], F10ValuationTrend);
+	        this.errors = source["errors"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -585,40 +1173,8 @@ export namespace models {
 		}
 	}
 	
-	export class ChatMessage {
-	    id: string;
-	    agentId: string;
-	    agentName: string;
-	    role: string;
-	    content: string;
-	    timestamp: number;
-	    replyTo?: string;
-	    mentions?: string[];
-	    round?: number;
-	    msgType?: string;
-	    error?: string;
-	    meetingMode?: string;
 	
-	    static createFrom(source: any = {}) {
-	        return new ChatMessage(source);
-	    }
 	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.agentId = source["agentId"];
-	        this.agentName = source["agentName"];
-	        this.role = source["role"];
-	        this.content = source["content"];
-	        this.timestamp = source["timestamp"];
-	        this.replyTo = source["replyTo"];
-	        this.mentions = source["mentions"];
-	        this.round = source["round"];
-	        this.msgType = source["msgType"];
-	        this.error = source["error"];
-	        this.meetingMode = source["meetingMode"];
-	    }
-	}
 	
 	
 	
@@ -654,6 +1210,7 @@ export namespace models {
 	        this.ma20 = source["ma20"];
 	    }
 	}
+	
 	
 	export class LongHuBangDetail {
 	    rank: number;
@@ -736,9 +1293,30 @@ export namespace models {
 	    }
 	}
 	
+	export class MarketIndex {
+	    code: string;
+	    name: string;
+	    price: number;
+	    change: number;
+	    changePercent: number;
+	    volume: number;
+	    amount: number;
 	
+	    static createFrom(source: any = {}) {
+	        return new MarketIndex(source);
+	    }
 	
-	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.code = source["code"];
+	        this.name = source["name"];
+	        this.price = source["price"];
+	        this.change = source["change"];
+	        this.changePercent = source["changePercent"];
+	        this.volume = source["volume"];
+	        this.amount = source["amount"];
+	    }
+	}
 	
 	export class OrderBookItem {
 	    price: number;
@@ -793,6 +1371,8 @@ export namespace models {
 	
 	
 	
+	
+	
 	export class Stock {
 	    symbol: string;
 	    name: string;
@@ -829,6 +1409,86 @@ export namespace models {
 	        this.preClose = source["preClose"];
 	    }
 	}
+	
+	export class StockMoveItem {
+	    rank: number;
+	    code: string;
+	    name: string;
+	    price: number;
+	    changePercent: number;
+	    speed: number;
+	    turnoverRate: number;
+	    volume: number;
+	    amount: number;
+	    mainNetInflow: number;
+	    mainNetInflowRatio: number;
+	    high: number;
+	    low: number;
+	    open: number;
+	    preClose: number;
+	    updateTime?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new StockMoveItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.rank = source["rank"];
+	        this.code = source["code"];
+	        this.name = source["name"];
+	        this.price = source["price"];
+	        this.changePercent = source["changePercent"];
+	        this.speed = source["speed"];
+	        this.turnoverRate = source["turnoverRate"];
+	        this.volume = source["volume"];
+	        this.amount = source["amount"];
+	        this.mainNetInflow = source["mainNetInflow"];
+	        this.mainNetInflowRatio = source["mainNetInflowRatio"];
+	        this.high = source["high"];
+	        this.low = source["low"];
+	        this.open = source["open"];
+	        this.preClose = source["preClose"];
+	        this.updateTime = source["updateTime"];
+	    }
+	}
+	export class StockMoveList {
+	    moveType: string;
+	    items: StockMoveItem[];
+	    total?: number;
+	    updateTime?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new StockMoveList(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.moveType = source["moveType"];
+	        this.items = this.convertValues(source["items"], StockMoveItem);
+	        this.total = source["total"];
+	        this.updateTime = source["updateTime"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class StockPosition {
 	    shares: number;
 	    costPrice: number;
@@ -885,6 +1545,7 @@ export namespace models {
 		    return a;
 		}
 	}
+	
 	export class StrategyAgent {
 	    id: string;
 	    name: string;
@@ -998,6 +1659,24 @@ export namespace services {
 		    return a;
 		}
 	}
+	export class MarketStatus {
+	    status: string;
+	    statusText: string;
+	    isTradeDay: boolean;
+	    holidayName: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MarketStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.status = source["status"];
+	        this.statusText = source["statusText"];
+	        this.isTradeDay = source["isTradeDay"];
+	        this.holidayName = source["holidayName"];
+	    }
+	}
 	export class StockSearchResult {
 	    symbol: string;
 	    name: string;
@@ -1031,58 +1710,6 @@ export namespace services {
 	        this.content = source["content"];
 	        this.url = source["url"];
 	    }
-	}
-	export class TradingPeriod {
-	    status: string;
-	    text: string;
-	    startTime: string;
-	    endTime: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new TradingPeriod(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.status = source["status"];
-	        this.text = source["text"];
-	        this.startTime = source["startTime"];
-	        this.endTime = source["endTime"];
-	    }
-	}
-	export class TradingSchedule {
-	    isTradeDay: boolean;
-	    holidayName: string;
-	    periods: TradingPeriod[];
-	
-	    static createFrom(source: any = {}) {
-	        return new TradingSchedule(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.isTradeDay = source["isTradeDay"];
-	        this.holidayName = source["holidayName"];
-	        this.periods = this.convertValues(source["periods"], TradingPeriod);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 	export class UpdateInfo {
 	    hasUpdate: boolean;

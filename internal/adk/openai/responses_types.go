@@ -5,7 +5,7 @@ package openai
 // CreateResponseRequest OpenAI Responses API 请求体（对齐 go-openai PR #1089 命名）
 type CreateResponseRequest struct {
 	Model              string              `json:"model"`
-	Input              any                 `json:"input"`                         // string 或 []ResponsesInputItem
+	Input              any                 `json:"input"` // string 或 []ResponsesInputItem
 	Instructions       string              `json:"instructions,omitempty"`
 	Tools              []ResponsesTool     `json:"tools,omitempty"`
 	Stream             bool                `json:"stream,omitempty"`
@@ -33,7 +33,7 @@ type ResponsesInputItem struct {
 
 // ResponsesTool Responses API 工具定义（扁平化，name 在顶层）
 type ResponsesTool struct {
-	Type        string `json:"type"`                  // "function"
+	Type        string `json:"type"` // "function"
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Parameters  any    `json:"parameters"`
@@ -62,7 +62,7 @@ type CreateResponseResponse struct {
 
 // ResponsesOutputItem output 数组中的一项
 type ResponsesOutputItem struct {
-	Type   string `json:"type"`   // "message", "function_call"
+	Type   string `json:"type"` // "message", "function_call"
 	ID     string `json:"id"`
 	Status string `json:"status"`
 	// message 类型字段
@@ -76,8 +76,9 @@ type ResponsesOutputItem struct {
 
 // ResponsesContentPart content 中的一个部分
 type ResponsesContentPart struct {
-	Type string `json:"type"`           // "output_text", "refusal", "reasoning"
-	Text string `json:"text,omitempty"`
+	Type    string `json:"type"`              // "output_text", "refusal", "reasoning"
+	Text    string `json:"text,omitempty"`    // output_text/reasoning 常见字段
+	Refusal string `json:"refusal,omitempty"` // refusal 常见字段
 }
 
 // ResponsesUsage 用量信息

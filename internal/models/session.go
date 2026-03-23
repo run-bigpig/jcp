@@ -29,6 +29,4 @@ type ChatMessage struct {
 	Mentions  []string `json:"mentions,omitempty"`  // @的成员ID列表
 	Round     int      `json:"round,omitempty"`     // 讨论轮次
 	MsgType   string   `json:"msgType,omitempty"`   // 消息类型: opening/opinion/summary
-	Error       string   `json:"error,omitempty"`       // 失败时的错误信息
-	MeetingMode string   `json:"meetingMode,omitempty"` // smart=串行, direct=独立
 }

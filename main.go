@@ -16,7 +16,7 @@ import (
 var assets embed.FS
 
 // Version 版本号，通过 ldflags 注入
-var Version = "dev"
+var Version = "1.0.0"
 
 func main() {
 	// 捕获 panic 并写入日志文件
@@ -31,14 +31,15 @@ func main() {
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:           "韭菜盘",
-		Width:           1920,
-		Height:          1080,
-		MinWidth:        1366,
-		MinHeight:       768,
-		Frameless:       true,
-		CSSDragProperty: "--wails-draggable",
-		CSSDragValue:    "drag",
+		Title:            "韭菜盘",
+		Width:            1366,
+		Height:           768,
+		MinWidth:         1366,
+		MinHeight:        768,
+		WindowStartState: options.Maximised,
+		Frameless:        true,
+		CSSDragProperty:  "--wails-draggable",
+		CSSDragValue:     "drag",
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

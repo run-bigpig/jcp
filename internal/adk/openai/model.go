@@ -1,21 +1,21 @@
 package openai
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"iter"
-	"slices"
+	"net/http"
+	"strings"
 
+	"github.com/run-bigpig/jcp/internal/logger"
 	"github.com/sashabaranov/go-openai"
 	"google.golang.org/adk/model"
 	"google.golang.org/genai"
-
-	"github.com/run-bigpig/jcp/internal/logger"
 )
-
-var modelLog = logger.New("openai:model")
 
 var _ model.LLM = &OpenAIModel{}
 
@@ -23,20 +23,29 @@ var (
 	ErrNoChoicesInResponse = errors.New("no choices in OpenAI response")
 )
 
+var log = logger.New("OpenAI")
+
 // OpenAIModel 实现 model.LLM 接口，支持 thinking 模型
 type OpenAIModel struct {
-	Client       *openai.Client
-	ModelName    string
-	NoSystemRole bool // 不支持 system role 时需要降级处理
+	Client     *openai.Client
+	ModelName  string
+	BaseURL    string
+	APIKey     string
+	HTTPClient openai.HTTPDoer
 }
 
 // NewOpenAIModel 创建 OpenAI 模型
-func NewOpenAIModel(modelName string, cfg openai.ClientConfig, noSystemRole bool) *OpenAIModel {
+func NewOpenAIModel(modelName string, cfg openai.ClientConfig, apiKey string, baseURL string, httpClient openai.HTTPDoer) *OpenAIModel {
 	client := openai.NewClientWithConfig(cfg)
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
 	return &OpenAIModel{
-		Client:       client,
-		ModelName:    modelName,
-		NoSystemRole: noSystemRole,
+		Client:     client,
+		ModelName:  modelName,
+		BaseURL:    baseURL,
+		APIKey:     apiKey,
+		HTTPClient: httpClient,
 	}
 }
 
@@ -48,7 +57,13 @@ func (o *OpenAIModel) Name() string {
 // GenerateContent 实现 model.LLM 接口
 func (o *OpenAIModel) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
 	if stream {
+		if isReasoningModel(o.ModelName) {
+			return o.generateRaw(ctx, req)
+		}
 		return o.generateStream(ctx, req)
+	}
+	if isReasoningModel(o.ModelName) {
+		return o.generateRaw(ctx, req)
 	}
 	return o.generate(ctx, req)
 }
@@ -56,10 +71,14 @@ func (o *OpenAIModel) GenerateContent(ctx context.Context, req *model.LLMRequest
 // generate 非流式生成
 func (o *OpenAIModel) generate(ctx context.Context, req *model.LLMRequest) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
-		openaiReq, err := toOpenAIChatCompletionRequest(req, o.ModelName, o.NoSystemRole)
+		openaiReq, err := toOpenAIChatCompletionRequest(req, o.ModelName)
 		if err != nil {
 			yield(nil, err)
 			return
+		}
+		if isReasoningModel(o.ModelName) {
+			log.Debug("reasoning model request: model=%s temp=%.2f top_p=%.2f n=%d presence=%.2f frequency=%.2f",
+				o.ModelName, openaiReq.Temperature, openaiReq.TopP, openaiReq.N, openaiReq.PresencePenalty, openaiReq.FrequencyPenalty)
 		}
 
 		resp, err := o.Client.CreateChatCompletion(ctx, openaiReq)
@@ -78,18 +97,82 @@ func (o *OpenAIModel) generate(ctx context.Context, req *model.LLMRequest) iter.
 	}
 }
 
+func (o *OpenAIModel) generateRaw(ctx context.Context, req *model.LLMRequest) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		openaiReq, err := toOpenAIChatCompletionRequest(req, o.ModelName)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		openaiReq.Stream = false
+		log.Debug("reasoning model raw request: model=%s temp=%.2f top_p=%.2f n=%d presence=%.2f frequency=%.2f",
+			o.ModelName, openaiReq.Temperature, openaiReq.TopP, openaiReq.N, openaiReq.PresencePenalty, openaiReq.FrequencyPenalty)
+
+		body, err := json.Marshal(openaiReq)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+
+		url := strings.TrimRight(o.BaseURL, "/") + "/chat/completions"
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "application/json")
+		if o.APIKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+o.APIKey)
+		}
+
+		resp, err := o.HTTPClient.Do(httpReq)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
+			bodySnippet := normalizeLogText(string(respBody), 320)
+			log.Error("openai raw request failed: model=%s status=%d url=%s body=%s", o.ModelName, resp.StatusCode, url, bodySnippet)
+			yield(nil, fmt.Errorf("openai raw request failed (status=%d): %s", resp.StatusCode, bodySnippet))
+			return
+		}
+
+		var parsed openai.ChatCompletionResponse
+		if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+			yield(nil, err)
+			return
+		}
+
+		llmResp, err := convertChatCompletionResponse(&parsed)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		yield(llmResp, nil)
+	}
+}
+
 // generateStream 流式生成
 func (o *OpenAIModel) generateStream(ctx context.Context, req *model.LLMRequest) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
-		openaiReq, err := toOpenAIChatCompletionRequest(req, o.ModelName, o.NoSystemRole)
+		openaiReq, err := toOpenAIChatCompletionRequest(req, o.ModelName)
 		if err != nil {
 			yield(nil, err)
 			return
 		}
 		openaiReq.Stream = true
+		if isReasoningModel(o.ModelName) {
+			log.Debug("reasoning model stream: model=%s temp=%.2f top_p=%.2f n=%d presence=%.2f frequency=%.2f",
+				o.ModelName, openaiReq.Temperature, openaiReq.TopP, openaiReq.N, openaiReq.PresencePenalty, openaiReq.FrequencyPenalty)
+		}
 
 		stream, err := o.Client.CreateChatCompletionStream(ctx, openaiReq)
 		if err != nil {
+			log.Error("openai stream request failed: model=%s err=%s", o.ModelName, normalizeLogText(err.Error(), 320))
 			yield(nil, err)
 			return
 		}
@@ -109,40 +192,20 @@ func (o *OpenAIModel) processStream(stream *openai.ChatCompletionStream, yield f
 	var usageMetadata *genai.GenerateContentResponseUsageMetadata
 	toolCallsMap := make(map[int]*toolCallBuilder)
 	var textContent string
-	var thoughtContent string
-	thinkParser := newThinkTagStreamParser()
+	var reasoningContent string
 
-	emitPartial := func(seg thinkSegment) bool {
-		if seg.Text == "" {
-			return true
-		}
-		if seg.Thought {
-			thoughtContent += seg.Text
-		} else {
-			textContent += seg.Text
-		}
-
-		part := &genai.Part{Text: seg.Text, Thought: seg.Thought}
-		llmResp := &model.LLMResponse{
-			Content:      &genai.Content{Role: "model", Parts: []*genai.Part{part}},
-			Partial:      true,
-			TurnComplete: false,
-		}
-		return yield(llmResp, nil)
-	}
-
-	var streamErr error
 	for {
 		chunk, err := stream.Recv()
 		if errors.Is(err, context.Canceled) {
 			return
 		}
 		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				streamErr = fmt.Errorf("流式读取错误: %w", err)
-				modelLog.Warn("流式读取中断: %v", err)
+			if errors.Is(err, io.EOF) {
+				break
 			}
-			break
+			log.Error("openai stream recv failed: model=%s err=%s", o.ModelName, normalizeLogText(err.Error(), 320))
+			yield(nil, fmt.Errorf("openai stream recv failed: %w", err))
+			return
 		}
 
 		if len(chunk.Choices) == 0 {
@@ -151,24 +214,36 @@ func (o *OpenAIModel) processStream(stream *openai.ChatCompletionStream, yield f
 
 		choice := chunk.Choices[0]
 
-		// 官方 reasoning_content -> Thought
+		// 处理 reasoning_content (thinking 模型)
 		if choice.Delta.ReasoningContent != "" {
-			if !emitPartial(thinkSegment{
-				Text:    choice.Delta.ReasoningContent,
-				Thought: true,
-			}) {
+			reasoningContent += choice.Delta.ReasoningContent
+			// 发送 thinking 部分
+			part := &genai.Part{Text: choice.Delta.ReasoningContent, Thought: true}
+			llmResp := &model.LLMResponse{
+				Content:      &genai.Content{Role: "model", Parts: []*genai.Part{part}},
+				Partial:      true,
+				TurnComplete: false,
+			}
+			if !yield(llmResp, nil) {
 				return
 			}
 		}
 
-		// content 中的 <think>...</think> -> Thought
-		for _, seg := range thinkParser.Feed(choice.Delta.Content) {
-			if !emitPartial(seg) {
+		// 处理普通文本内容
+		if choice.Delta.Content != "" {
+			textContent += choice.Delta.Content
+			part := &genai.Part{Text: choice.Delta.Content}
+			llmResp := &model.LLMResponse{
+				Content:      &genai.Content{Role: "model", Parts: []*genai.Part{part}},
+				Partial:      true,
+				TurnComplete: false,
+			}
+			if !yield(llmResp, nil) {
 				return
 			}
 		}
 
-		// 处理标准工具调用
+		// 处理工具调用
 		for _, toolCall := range choice.Delta.ToolCalls {
 			idx := 0
 			if toolCall.Index != nil {
@@ -189,10 +264,12 @@ func (o *OpenAIModel) processStream(stream *openai.ChatCompletionStream, yield f
 			builder.args += toolCall.Function.Arguments
 		}
 
+		// 处理结束原因
 		if choice.FinishReason != "" {
 			finishReason = convertFinishReason(string(choice.FinishReason))
 		}
 
+		// 处理 usage
 		if chunk.Usage != nil {
 			usageMetadata = &genai.GenerateContentResponseUsageMetadata{
 				PromptTokenCount:     int32(chunk.Usage.PromptTokens),
@@ -202,42 +279,25 @@ func (o *OpenAIModel) processStream(stream *openai.ChatCompletionStream, yield f
 		}
 	}
 
-	// 刷新流式标签解析器（处理标签跨 chunk 场景）
-	for _, seg := range thinkParser.Flush() {
-		if !emitPartial(seg) {
-			return
-		}
-	}
-
-	// 聚合文本并解析第三方工具调用标记
+	// 添加聚合的文本内容
 	if textContent != "" {
-		vendorCalls, cleanedText := parseVendorToolCalls(textContent)
-		if cleanedText != "" {
-			aggregatedContent.Parts = append(aggregatedContent.Parts, &genai.Part{Text: cleanedText})
-		}
-		for i, vc := range vendorCalls {
-			aggregatedContent.Parts = append(aggregatedContent.Parts, &genai.Part{
-				FunctionCall: &genai.FunctionCall{
-					ID:   fmt.Sprintf("vendor_call_%d", i),
-					Name: vc.Name,
-					Args: vc.Args,
-				},
-			})
-		}
+		aggregatedContent.Parts = append(aggregatedContent.Parts, &genai.Part{Text: textContent})
 	}
 
-	if thoughtContent != "" {
-		aggregatedContent.Parts = append([]*genai.Part{{Text: thoughtContent, Thought: true}}, aggregatedContent.Parts...)
+	// 添加 reasoning content 作为 thought part
+	if reasoningContent != "" {
+		aggregatedContent.Parts = append([]*genai.Part{{Text: reasoningContent, Thought: true}}, aggregatedContent.Parts...)
 	}
 
-	// 聚合标准工具调用
+	// 添加工具调用
 	if len(toolCallsMap) > 0 {
 		indices := sortedKeys(toolCallsMap)
-		for _, idx := range indices {
+		for i, idx := range indices {
 			builder := toolCallsMap[idx]
+			callID := ensureFunctionCallID(builder.id, builder.name, i)
 			part := &genai.Part{
 				FunctionCall: &genai.FunctionCall{
-					ID:   builder.id,
+					ID:   callID,
 					Name: builder.name,
 					Args: parseJSONArgs(builder.args),
 				},
@@ -246,11 +306,7 @@ func (o *OpenAIModel) processStream(stream *openai.ChatCompletionStream, yield f
 		}
 	}
 
-	if streamErr != nil {
-		yield(nil, streamErr)
-		return
-	}
-
+	// 发送最终响应
 	finalResp := &model.LLMResponse{
 		Content:       aggregatedContent,
 		UsageMetadata: usageMetadata,
@@ -274,6 +330,13 @@ func sortedKeys(m map[int]*toolCallBuilder) []int {
 	for k := range m {
 		keys = append(keys, k)
 	}
-	slices.Sort(keys)
+	// 简单冒泡排序
+	for i := 0; i < len(keys)-1; i++ {
+		for j := 0; j < len(keys)-i-1; j++ {
+			if keys[j] > keys[j+1] {
+				keys[j], keys[j+1] = keys[j+1], keys[j]
+			}
+		}
+	}
 	return keys
 }

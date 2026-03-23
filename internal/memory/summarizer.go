@@ -58,9 +58,6 @@ func (s *LLMSummarizer) generate(ctx context.Context, prompt string) (string, er
 		}
 		if resp != nil && resp.Content != nil {
 			for _, part := range resp.Content.Parts {
-				if part.Thought {
-					continue
-				}
 				if part.Text != "" {
 					result += part.Text
 				}

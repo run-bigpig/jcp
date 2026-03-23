@@ -2,8 +2,6 @@ package services
 
 import (
 	"context"
-	"fmt"
-	"slices"
 	"sync"
 	"time"
 
@@ -20,6 +18,7 @@ const (
 	EventStockUpdate         = "market:stock:update"
 	EventOrderBookUpdate     = "market:orderbook:update"
 	EventTelegraphUpdate     = "market:telegraph:update"
+	EventMarketStatusUpdate  = "market:status:update"
 	EventMarketIndicesUpdate = "market:indices:update"
 	EventMarketSubscribe     = "market:subscribe"
 	EventOrderBookSubscribe  = "market:orderbook:subscribe"
@@ -27,12 +26,24 @@ const (
 	EventKLineSubscribe      = "market:kline:subscribe"
 )
 
-// 推送频率常量
+// 推送频率配置
 const (
-	tickerFast     = 1 * time.Second  // 盘口（交易时段）
-	tickerNormal   = 3 * time.Second  // 股票、指数、分时K线
-	tickerSlow     = 30 * time.Second // 快讯、非交易时段降频
-	tickerKLineDay = 5 * time.Minute  // 日/周/月K线
+	// 高频推送统一为 30 秒
+	fastPushInterval = 30 * time.Second
+	// 常规推送统一为 1 分钟
+	normalPushInterval = 60 * time.Second
+	// 低频K线（日/周/月）统一为 1 小时
+	slowKLinePushInterval = 60 * time.Minute
+
+	stockPushInterval         = fastPushInterval
+	orderBookPushInterval     = fastPushInterval
+	marketIndicesPushInterval = fastPushInterval
+	klineMinutePushInterval   = fastPushInterval
+
+	telegraphPushInterval    = normalPushInterval
+	marketStatusPushInterval = normalPushInterval
+
+	klineDayPushInterval = slowKLinePushInterval
 )
 
 // safeCall 安全调用，捕获 panic 避免崩溃
@@ -64,25 +75,15 @@ type MarketDataPusher struct {
 	mu               sync.RWMutex
 
 	// K线订阅管理
-	klineSub      KLineSubscription
-	klineSubMu    sync.RWMutex
-	lastKLineTime int64 // 最后一根K线的时间戳，用于增量推送
+	klineSub   KLineSubscription
+	klineSubMu sync.RWMutex
 
 	// 快讯缓存（用于检测新快讯）
 	lastTelegraphContent string
 
-	// 盘口缓存（用于diff检测）
-	lastOrderBookHash string
-
 	// 控制
-	stopChan  chan struct{}
-	stopped   bool
-	ctrlMu    sync.Mutex
-	ready     bool          // 前端是否已准备好
-	readyChan chan struct{} // 前端准备好信号
-
-	// 防止 runParallel 重入堆积
-	pushMu sync.Mutex
+	stopChan chan struct{}
+	running  bool
 }
 
 // NewMarketDataPusher 创建市场数据推送服务
@@ -93,50 +94,30 @@ func NewMarketDataPusher(marketService *MarketService, configService *ConfigServ
 		newsService:     newsService,
 		subscribedCodes: make([]string, 0),
 		stopChan:        make(chan struct{}),
-		readyChan:       make(chan struct{}),
 	}
 }
 
 // Start 启动推送服务
 func (p *MarketDataPusher) Start(ctx context.Context) {
-	p.ctrlMu.Lock()
-	if p.stopped {
-		p.ctrlMu.Unlock()
-		return
-	}
 	p.ctx = ctx
-	p.ctrlMu.Unlock()
+	p.running = true
 
+	// 监听前端订阅请求
 	p.setupEventListeners()
-	p.initSubscriptions()
-	go p.pushLoop()
-}
 
-// SetReady 设置前端已准备好，开始推送数据
-func (p *MarketDataPusher) SetReady() {
-	p.ctrlMu.Lock()
-	defer p.ctrlMu.Unlock()
-	if p.ready {
-		return
-	}
-	p.ready = true
-	close(p.readyChan)
-	pusherLog.Info("前端已就绪，开始推送数据")
+	// 初始化订阅列表（从自选股加载）
+	p.initSubscriptions()
+
+	// 启动数据推送 goroutine
+	go p.pushLoop()
 }
 
 // Stop 停止推送服务
 func (p *MarketDataPusher) Stop() {
-	p.ctrlMu.Lock()
-	defer p.ctrlMu.Unlock()
-	if p.stopped {
-		return
+	if p.running {
+		close(p.stopChan)
+		p.running = false
 	}
-	p.stopped = true
-	close(p.stopChan)
-	// 清理事件监听
-	runtime.EventsOff(p.ctx, EventMarketSubscribe)
-	runtime.EventsOff(p.ctx, EventOrderBookSubscribe)
-	runtime.EventsOff(p.ctx, EventKLineSubscribe)
 }
 
 // setupEventListeners 设置事件监听
@@ -146,6 +127,8 @@ func (p *MarketDataPusher) setupEventListeners() {
 		if len(data) > 0 {
 			if codes, ok := data[0].([]any); ok {
 				p.updateSubscriptions(codes)
+				// 订阅变更后立即推送，降低首帧等待
+				go safeCall(p.pushStockData)
 			}
 		}
 	})
@@ -157,6 +140,8 @@ func (p *MarketDataPusher) setupEventListeners() {
 				p.mu.Lock()
 				p.currentOrderBook = code
 				p.mu.Unlock()
+				// 切换盘口后立即推送
+				go safeCall(p.pushOrderBookData)
 			}
 		}
 	})
@@ -169,8 +154,8 @@ func (p *MarketDataPusher) setupEventListeners() {
 			if code != "" && period != "" {
 				p.klineSubMu.Lock()
 				p.klineSub = KLineSubscription{Code: code, Period: period}
-				p.lastKLineTime = 0 // 重置增量时间戳
 				p.klineSubMu.Unlock()
+				// 切换订阅后立即推送一次
 				go safeCall(p.pushKLineData)
 			}
 		}
@@ -207,122 +192,59 @@ func (p *MarketDataPusher) updateSubscriptions(codes []any) {
 	}
 }
 
-// pushLoop 数据推送循环（并行推送 + 超时控制 + 时段感知）
+// pushLoop 数据推送循环
 func (p *MarketDataPusher) pushLoop() {
-	// 等待前端准备好
-	select {
-	case <-p.readyChan:
-		pusherLog.Info("收到前端就绪信号，启动推送循环")
-	case <-p.stopChan:
-		return
-	}
+	// 股票数据推送间隔：30秒
+	stockTicker := time.NewTicker(stockPushInterval)
+	// 盘口数据推送间隔：30秒
+	orderBookTicker := time.NewTicker(orderBookPushInterval)
+	// 快讯数据推送间隔：60秒
+	telegraphTicker := time.NewTicker(telegraphPushInterval)
+	// 市场状态推送间隔：60秒
+	marketStatusTicker := time.NewTicker(marketStatusPushInterval)
+	// 大盘指数推送间隔：30秒
+	marketIndicesTicker := time.NewTicker(marketIndicesPushInterval)
+	// 分时K线推送间隔：30秒
+	klineMinuteTicker := time.NewTicker(klineMinutePushInterval)
+	// 日/周/月K线推送间隔：60分钟
+	klineDayTicker := time.NewTicker(klineDayPushInterval)
 
-	fastTicker := time.NewTicker(tickerFast)
-	normalTicker := time.NewTicker(tickerNormal)
-	slowTicker := time.NewTicker(tickerSlow)
-	klineDayTicker := time.NewTicker(tickerKLineDay)
-
-	defer fastTicker.Stop()
-	defer normalTicker.Stop()
-	defer slowTicker.Stop()
+	defer stockTicker.Stop()
+	defer orderBookTicker.Stop()
+	defer telegraphTicker.Stop()
+	defer marketStatusTicker.Stop()
+	defer marketIndicesTicker.Stop()
+	defer klineMinuteTicker.Stop()
 	defer klineDayTicker.Stop()
 
-	// 立即并行推送一次（启动时5个并发请求，冷启动给足时间）
-	p.runParallel(15*time.Second, p.pushStockData, p.pushOrderBookData,
-		p.pushTelegraphData, p.pushMarketIndices, p.pushKLineData)
-
-	var normalCount int
+	// 立即推送一次
+	safeCall(p.pushStockData)
+	safeCall(p.pushOrderBookData)
+	safeCall(p.pushTelegraphData)
+	safeCall(p.pushMarketStatus)
+	safeCall(p.pushMarketIndices)
+	safeCall(p.pushKLineData)
 
 	for {
 		select {
 		case <-p.stopChan:
 			return
-		case <-fastTicker.C:
-			status := p.getMarketPhase()
-			// 仅交易时段高频推送盘口
-			if status == "trading" {
-				p.runParallel(2*time.Second, p.pushOrderBookData)
-			}
-		case <-normalTicker.C:
-			normalCount++
-			status := p.getMarketPhase()
-
-			switch status {
-			case "trading":
-				// 交易时段：正常频率
-				p.runParallel(8*time.Second, p.pushStockData, p.pushMarketIndices, p.pushKLineMinute)
-			case "pre_market":
-				// 集合竞价：推送盘口（虚拟撮合价）和股票，降频
-				if normalCount%3 == 0 {
-					p.runParallel(8*time.Second, p.pushStockData, p.pushOrderBookData, p.pushMarketIndices)
-				}
-			case "lunch_break":
-				// 午休：低频推送
-				if normalCount%5 == 0 {
-					p.runParallel(8*time.Second, p.pushStockData, p.pushMarketIndices)
-				}
-			default:
-				// 收盘：30秒一次
-				if normalCount%10 == 0 {
-					p.runParallel(8*time.Second, p.pushStockData, p.pushMarketIndices,
-						p.pushOrderBookData, p.pushKLineData)
-				}
-			}
-		case <-slowTicker.C:
-			p.runParallel(8*time.Second, p.pushTelegraphData)
+		case <-stockTicker.C:
+			safeCall(p.pushStockData)
+		case <-orderBookTicker.C:
+			safeCall(p.pushOrderBookData)
+		case <-telegraphTicker.C:
+			safeCall(p.pushTelegraphData)
+		case <-marketStatusTicker.C:
+			safeCall(p.pushMarketStatus)
+		case <-marketIndicesTicker.C:
+			safeCall(p.pushMarketIndices)
+		case <-klineMinuteTicker.C:
+			safeCall(p.pushKLineMinute)
 		case <-klineDayTicker.C:
-			if p.getMarketPhase() == "trading" {
-				p.runParallel(8*time.Second, p.pushKLineDay)
-			}
+			safeCall(p.pushKLineDay)
 		}
 	}
-}
-
-// runParallel 带超时的并行执行，防止协程堆积
-// 使用 TryLock 防止重入：上一轮未完成则跳过本轮
-func (p *MarketDataPusher) runParallel(timeout time.Duration, fns ...func()) {
-	if !p.pushMu.TryLock() {
-		// 上一轮推送还未完成，跳过本轮避免 goroutine 堆积
-		return
-	}
-	var unlockOnce sync.Once
-	unlock := func() {
-		unlockOnce.Do(func() {
-			p.pushMu.Unlock()
-		})
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(len(fns))
-	for _, fn := range fns {
-		go func(f func()) {
-			defer wg.Done()
-			safeCall(f)
-		}(fn)
-	}
-
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		unlock()
-	case <-time.After(timeout):
-		pusherLog.Warn("推送超时，后台等待当前轮次结束后再释放锁")
-		// 超时后不阻塞调用方，但保持锁直到本轮任务结束，避免重入
-		go func() {
-			<-done
-			unlock()
-		}()
-	}
-}
-
-// getMarketPhase 获取市场时段
-func (p *MarketDataPusher) getMarketPhase() string {
-	return p.marketService.GetMarketStatus().Status
 }
 
 // pushStockData 推送股票实时数据
@@ -345,32 +267,23 @@ func (p *MarketDataPusher) pushStockData() {
 	runtime.EventsEmit(p.ctx, EventStockUpdate, stocks)
 }
 
-// pushOrderBookData 推送盘口数据（带diff检测）
+// pushOrderBookData 推送盘口数据
 func (p *MarketDataPusher) pushOrderBookData() {
 	p.mu.RLock()
 	code := p.currentOrderBook
-	lastHash := p.lastOrderBookHash
 	p.mu.RUnlock()
 
 	if code == "" {
 		return
 	}
 
+	// 获取当前选中股票的真实盘口数据
 	orderBook, err := p.marketService.GetRealOrderBook(code)
 	if err != nil {
 		return
 	}
 
-	// 简单hash：买一卖一价格+数量
-	hash := orderBookHash(orderBook)
-	if hash == lastHash {
-		return // 无变化，跳过推送
-	}
-
-	p.mu.Lock()
-	p.lastOrderBookHash = hash
-	p.mu.Unlock()
-
+	// 推送到前端
 	runtime.EventsEmit(p.ctx, EventOrderBookUpdate, orderBook)
 }
 
@@ -399,6 +312,12 @@ func (p *MarketDataPusher) pushTelegraphData() {
 
 	// 推送到前端
 	runtime.EventsEmit(p.ctx, EventTelegraphUpdate, latest)
+}
+
+// pushMarketStatus 推送市场状态
+func (p *MarketDataPusher) pushMarketStatus() {
+	status := p.marketService.GetMarketStatus()
+	runtime.EventsEmit(p.ctx, EventMarketStatusUpdate, status)
 }
 
 // pushMarketIndices 推送大盘指数
@@ -432,60 +351,26 @@ func (p *MarketDataPusher) pushKLineData() {
 	})
 }
 
-// pushKLineMinute 推送分时K线（增量模式，仅推送最新1根）
+// pushKLineMinute 推送分时K线（3秒间隔，仅当订阅周期为1m时推送）
 func (p *MarketDataPusher) pushKLineMinute() {
 	p.klineSubMu.RLock()
 	sub := p.klineSub
-	lastTime := p.lastKLineTime
 	p.klineSubMu.RUnlock()
 
 	if sub.Code == "" || sub.Period != "1m" {
 		return
 	}
 
-	// 只获取最新几根用于增量判断
-	klines, err := p.marketService.GetKLineData(sub.Code, "1m", 5)
-	if err != nil || len(klines) == 0 {
+	klines, err := p.marketService.GetKLineData(sub.Code, "1m", 240)
+	if err != nil {
 		return
 	}
 
-	latest := klines[len(klines)-1]
-	latestTime := parseKLineTime(latest.Time)
-
-	// 推送最新一根（增量）
-	p.klineSubMu.Lock()
-	p.lastKLineTime = latestTime
-	p.klineSubMu.Unlock()
-
-	// 首次或时间变化才推送
-	if lastTime == 0 || latestTime != lastTime {
-		runtime.EventsEmit(p.ctx, EventKLineUpdate, map[string]any{
-			"code":        sub.Code,
-			"period":      "1m",
-			"data":        []models.KLineData{latest},
-			"incremental": true,
-		})
-	}
-}
-
-// parseKLineTime 解析K线时间为时间戳
-func parseKLineTime(t string) int64 {
-	if parsed, err := time.Parse("2006-01-02 15:04:05", t); err == nil {
-		return parsed.Unix()
-	}
-	return 0
-}
-
-// orderBookHash 生成盘口简单hash（买一卖一）
-func orderBookHash(ob models.OrderBook) string {
-	var b1Price, b1Size, a1Price, a1Size float64
-	if len(ob.Bids) > 0 {
-		b1Price, b1Size = ob.Bids[0].Price, float64(ob.Bids[0].Size)
-	}
-	if len(ob.Asks) > 0 {
-		a1Price, a1Size = ob.Asks[0].Price, float64(ob.Asks[0].Size)
-	}
-	return fmt.Sprintf("%.2f:%.0f:%.2f:%.0f", b1Price, b1Size, a1Price, a1Size)
+	runtime.EventsEmit(p.ctx, EventKLineUpdate, map[string]any{
+		"code":   sub.Code,
+		"period": "1m",
+		"data":   klines,
+	})
 }
 
 // pushKLineDay 推送日/周/月K线（5分钟间隔，仅当订阅周期非1m时推送）
@@ -516,9 +401,13 @@ func (p *MarketDataPusher) AddSubscription(code string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if !slices.Contains(p.subscribedCodes, code) {
-		p.subscribedCodes = append(p.subscribedCodes, code)
+	// 检查是否已存在
+	for _, c := range p.subscribedCodes {
+		if c == code {
+			return
+		}
 	}
+	p.subscribedCodes = append(p.subscribedCodes, code)
 }
 
 // RemoveSubscription 移除订阅
