@@ -114,13 +114,29 @@ func (m *Manager) rebuildTransport() {
 
 // systemProxyFunc 获取系统代理（作为 Transport.Proxy 函数）
 func (m *Manager) systemProxyFunc(req *http.Request) (*url.URL, error) {
-	// 优先使用环境变量
-	if proxy, err := http.ProxyFromEnvironment(req); proxy != nil || err != nil {
-		return proxy, err
-	}
+	return resolveSystemProxy(req, runtime.GOOS, http.ProxyFromEnvironment, m.getOSProxy)
+}
 
-	// 根据操作系统获取系统级代理
-	proxyStr := m.getOSProxy()
+func resolveSystemProxy(
+	req *http.Request,
+	goos string,
+	envResolver func(*http.Request) (*url.URL, error),
+	osResolver func(*http.Request) string,
+) (*url.URL, error) {
+	switch goos {
+	case "windows":
+		return parseProxyURL(osResolver(req))
+	case "linux":
+		return envResolver(req)
+	default:
+		if proxy, err := envResolver(req); proxy != nil || err != nil {
+			return proxy, err
+		}
+		return parseProxyURL(osResolver(req))
+	}
+}
+
+func parseProxyURL(proxyStr string) (*url.URL, error) {
 	if proxyStr == "" {
 		return nil, nil
 	}
@@ -128,10 +144,14 @@ func (m *Manager) systemProxyFunc(req *http.Request) (*url.URL, error) {
 }
 
 // getOSProxy 根据操作系统获取系统代理设置
-func (m *Manager) getOSProxy() string {
+func (m *Manager) getOSProxy(req *http.Request) string {
 	switch runtime.GOOS {
 	case "windows":
-		return m.getWindowsProxy()
+		scheme := "http"
+		if req != nil && req.URL != nil && req.URL.Scheme != "" {
+			scheme = strings.ToLower(req.URL.Scheme)
+		}
+		return m.getWindowsProxy(scheme)
 	case "darwin":
 		return m.getMacOSProxy()
 	default:
@@ -140,9 +160,9 @@ func (m *Manager) getOSProxy() string {
 }
 
 // getWindowsProxy 从 Windows 注册表读取系统代理
-func (m *Manager) getWindowsProxy() string {
+func (m *Manager) getWindowsProxy(targetScheme string) string {
 	// 检查代理是否启用
-	enableCmd := exec.Command("reg", "query",
+	enableCmd := newCommand("reg", "query",
 		`HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`,
 		"/v", "ProxyEnable")
 	enableOut, err := enableCmd.Output()
@@ -155,7 +175,7 @@ func (m *Manager) getWindowsProxy() string {
 	}
 
 	// 获取代理服务器地址
-	serverCmd := exec.Command("reg", "query",
+	serverCmd := newCommand("reg", "query",
 		`HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`,
 		"/v", "ProxyServer")
 	serverOut, err := serverCmd.Output()
@@ -169,15 +189,77 @@ func (m *Manager) getWindowsProxy() string {
 		if strings.Contains(line, "ProxyServer") {
 			fields := strings.Fields(line)
 			if len(fields) >= 3 {
-				proxy := fields[len(fields)-1]
-				if !strings.HasPrefix(proxy, "http") {
-					proxy = "http://" + proxy
+				if proxy, ok := parseWindowsProxyValue(fields[len(fields)-1], targetScheme); ok {
+					return proxy
 				}
-				return proxy
 			}
 		}
 	}
 	return ""
+}
+
+func parseWindowsProxyValue(raw string, targetScheme string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false
+	}
+
+	normalizedScheme := strings.ToLower(strings.TrimSpace(targetScheme))
+	if normalizedScheme == "" {
+		normalizedScheme = "http"
+	}
+
+	if !strings.Contains(raw, "=") && !strings.Contains(raw, ";") {
+		return normalizeWindowsProxyURL(raw, "http")
+	}
+
+	entries := strings.Split(raw, ";")
+	byScheme := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(parts[0]))
+		value := strings.TrimSpace(parts[1])
+		if value == "" {
+			continue
+		}
+		byScheme[key] = value
+	}
+
+	for _, candidate := range []string{normalizedScheme, "https", "http", "socks"} {
+		if value := byScheme[candidate]; value != "" {
+			proxyScheme := "http"
+			if candidate == "socks" {
+				proxyScheme = "socks5"
+			}
+			return normalizeWindowsProxyURL(value, proxyScheme)
+		}
+	}
+
+	return "", false
+}
+
+func normalizeWindowsProxyURL(value string, defaultScheme string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false
+	}
+
+	lowerValue := strings.ToLower(value)
+	if strings.HasPrefix(lowerValue, "http://") || strings.HasPrefix(lowerValue, "https://") || strings.HasPrefix(lowerValue, "socks5://") {
+		return value, true
+	}
+
+	if defaultScheme == "" {
+		defaultScheme = "http"
+	}
+	return defaultScheme + "://" + value, true
 }
 
 // getMacOSProxy 从 macOS 系统偏好设置读取代理
