@@ -17,6 +17,7 @@ interface AIConfig {
   apiKey: string;
   modelName: string;
   maxTokens: number;
+  tokenParamMode?: string;
   temperature: number;
   timeout: number;
   isDefault: boolean;
@@ -39,6 +40,7 @@ interface MemoryConfig {
 
 // 代理模式类型
 type ProxyMode = 'none' | 'system' | 'custom';
+type TokenParamMode = 'auto' | 'max_tokens' | 'max_completion_tokens';
 
 // 代理配置接口
 interface ProxyConfig {
@@ -82,6 +84,17 @@ const useSettingsToast = () => {
   }, []);
 
   return { toast, showToast, hideToast };
+};
+
+const TOKEN_PARAM_OPTIONS: Array<{ value: TokenParamMode; label: string }> = [
+  { value: 'auto', label: '自动（按模型判断）' },
+  { value: 'max_tokens', label: '使用 max_tokens' },
+  { value: 'max_completion_tokens', label: '使用 max_completion_tokens' },
+];
+
+const normalizeTokenParamMode = (value?: string): TokenParamMode => {
+  if (value === 'max_tokens' || value === 'max_completion_tokens') return value;
+  return 'auto';
 };
 
 export const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose }) => {
@@ -446,6 +459,7 @@ const ProviderSettings: React.FC<ProviderSettingsProps> = ({ configs, onChange, 
       apiKey: '',
       modelName: getDefaultModel(newProviderType),
       maxTokens: 2048,
+      tokenParamMode: 'auto',
       temperature: 0.7,
       timeout: 60,
       isDefault: configs.length === 0,
@@ -855,10 +869,27 @@ const ProviderEditView: React.FC<ProviderEditViewProps> = ({
         )}
 
         {config.provider === 'openai' && (
-          <div className="flex items-center justify-between">
-            <label className={`text-sm ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>使用 Responses API</label>
-            <ToggleSwitch checked={config.useResponses} onChange={v => onChange({ ...config, useResponses: v })} />
-          </div>
+          <>
+            <div className="flex items-center justify-between">
+              <label className={`text-sm ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>使用 Responses API</label>
+              <ToggleSwitch checked={config.useResponses} onChange={v => onChange({ ...config, useResponses: v })} />
+            </div>
+            <div>
+              <label className={`block text-sm mb-1.5 ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>token 参数名</label>
+              <select
+                value={normalizeTokenParamMode(config.tokenParamMode)}
+                onChange={e => onChange({ ...config, tokenParamMode: e.target.value as TokenParamMode })}
+                className={`w-full fin-input rounded-lg px-3 py-2 text-sm ${colors.isDark ? 'text-white' : 'text-slate-800'}`}
+              >
+                {TOKEN_PARAM_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              <p className={`text-xs mt-1 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                仅对 OpenAI Chat Completions 生效；自动模式会按模型类型选择参数名。
+              </p>
+            </div>
+          </>
         )}
 
         {isVertexAI && (

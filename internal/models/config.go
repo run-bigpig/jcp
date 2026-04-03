@@ -10,18 +10,27 @@ const (
 	AIProviderAnthropic AIProvider = "anthropic"
 )
 
+type OpenAITokenParamMode string
+
+const (
+	OpenAITokenParamAuto                OpenAITokenParamMode = "auto"
+	OpenAITokenParamMaxTokens           OpenAITokenParamMode = "max_tokens"
+	OpenAITokenParamMaxCompletionTokens OpenAITokenParamMode = "max_completion_tokens"
+)
+
 // AIConfig AI服务配置
 type AIConfig struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	Provider    AIProvider `json:"provider"`
-	BaseURL     string     `json:"baseUrl"`
-	APIKey      string     `json:"apiKey"`
-	ModelName   string     `json:"modelName"`
-	MaxTokens   int        `json:"maxTokens"`
-	Temperature float64    `json:"temperature"`
-	Timeout     int        `json:"timeout"`
-	IsDefault   bool       `json:"isDefault"`
+	ID             string               `json:"id"`
+	Name           string               `json:"name"`
+	Provider       AIProvider           `json:"provider"`
+	BaseURL        string               `json:"baseUrl"`
+	APIKey         string               `json:"apiKey"`
+	ModelName      string               `json:"modelName"`
+	MaxTokens      int                  `json:"maxTokens"`
+	TokenParamMode OpenAITokenParamMode `json:"tokenParamMode"`
+	Temperature    float64              `json:"temperature"`
+	Timeout        int                  `json:"timeout"`
+	IsDefault      bool                 `json:"isDefault"`
 	// OpenAI Responses API 开关
 	UseResponses bool `json:"useResponses"`
 	// 不支持 system role（自动检测，用户不可见）
@@ -46,11 +55,11 @@ type MCPServerConfig struct {
 	ID            string           `json:"id"`
 	Name          string           `json:"name"`
 	TransportType MCPTransportType `json:"transportType"`
-	Endpoint      string           `json:"endpoint"`      // HTTP/SSE 端点 URL
-	Command       string           `json:"command"`       // 命令行传输的命令
-	Args          []string         `json:"args"`          // 命令行参数
-	ToolFilter    []string         `json:"toolFilter"`    // 工具过滤列表（空则全部）
-	Enabled       bool             `json:"enabled"`       // 是否启用
+	Endpoint      string           `json:"endpoint"`   // HTTP/SSE 端点 URL
+	Command       string           `json:"command"`    // 命令行传输的命令
+	Args          []string         `json:"args"`       // 命令行参数
+	ToolFilter    []string         `json:"toolFilter"` // 工具过滤列表（空则全部）
+	Enabled       bool             `json:"enabled"`    // 是否启用
 }
 
 // AppConfig 应用配置

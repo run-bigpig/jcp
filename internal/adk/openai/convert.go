@@ -171,7 +171,7 @@ func parseVendorToolCalls(text string) ([]VendorToolCall, string) {
 }
 
 // toOpenAIChatCompletionRequest 将 ADK 请求转换为 OpenAI 请求
-func toOpenAIChatCompletionRequest(req *model.LLMRequest, modelName string, noSystemRole bool) (openai.ChatCompletionRequest, error) {
+func toOpenAIChatCompletionRequest(req *model.LLMRequest, modelName string, noSystemRole bool, tokenParamMode string) (openai.ChatCompletionRequest, error) {
 	openaiMessages := make([]openai.ChatCompletionMessage, 0, len(req.Contents))
 	for _, content := range req.Contents {
 		msgs, err := toOpenAIChatCompletionMessage(content)
@@ -213,7 +213,12 @@ func toOpenAIChatCompletionRequest(req *model.LLMRequest, modelName string, noSy
 			openaiReq.Temperature = *req.Config.Temperature
 		}
 		if req.Config.MaxOutputTokens > 0 {
-			openaiReq.MaxTokens = int(req.Config.MaxOutputTokens)
+			switch ResolveTokenParamMode(modelName, tokenParamMode) {
+			case TokenParamModeMaxCompletionTokens:
+				openaiReq.MaxCompletionTokens = int(req.Config.MaxOutputTokens)
+			default:
+				openaiReq.MaxTokens = int(req.Config.MaxOutputTokens)
+			}
 		}
 		if req.Config.TopP != nil {
 			openaiReq.TopP = *req.Config.TopP

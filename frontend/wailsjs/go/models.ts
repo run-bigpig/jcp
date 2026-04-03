@@ -238,6 +238,7 @@ export namespace models {
 	    apiKey: string;
 	    modelName: string;
 	    maxTokens: number;
+	    tokenParamMode: string;
 	    temperature: number;
 	    timeout: number;
 	    isDefault: boolean;
@@ -260,6 +261,7 @@ export namespace models {
 	        this.apiKey = source["apiKey"];
 	        this.modelName = source["modelName"];
 	        this.maxTokens = source["maxTokens"];
+	        this.tokenParamMode = source["tokenParamMode"];
 	        this.temperature = source["temperature"];
 	        this.timeout = source["timeout"];
 	        this.isDefault = source["isDefault"];

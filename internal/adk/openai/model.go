@@ -7,6 +7,7 @@ import (
 	"io"
 	"iter"
 	"slices"
+	"strings"
 
 	"github.com/sashabaranov/go-openai"
 	"google.golang.org/adk/model"
@@ -25,18 +26,20 @@ var (
 
 // OpenAIModel 实现 model.LLM 接口，支持 thinking 模型
 type OpenAIModel struct {
-	Client       *openai.Client
-	ModelName    string
-	NoSystemRole bool // 不支持 system role 时需要降级处理
+	Client         *openai.Client
+	ModelName      string
+	TokenParamMode string
+	NoSystemRole   bool // 不支持 system role 时需要降级处理
 }
 
 // NewOpenAIModel 创建 OpenAI 模型
-func NewOpenAIModel(modelName string, cfg openai.ClientConfig, noSystemRole bool) *OpenAIModel {
+func NewOpenAIModel(modelName string, cfg openai.ClientConfig, noSystemRole bool, tokenParamMode string) *OpenAIModel {
 	client := openai.NewClientWithConfig(cfg)
 	return &OpenAIModel{
-		Client:       client,
-		ModelName:    modelName,
-		NoSystemRole: noSystemRole,
+		Client:         client,
+		ModelName:      modelName,
+		TokenParamMode: tokenParamMode,
+		NoSystemRole:   noSystemRole,
 	}
 }
 
@@ -56,13 +59,20 @@ func (o *OpenAIModel) GenerateContent(ctx context.Context, req *model.LLMRequest
 // generate 非流式生成
 func (o *OpenAIModel) generate(ctx context.Context, req *model.LLMRequest) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
-		openaiReq, err := toOpenAIChatCompletionRequest(req, o.ModelName, o.NoSystemRole)
+		openaiReq, err := toOpenAIChatCompletionRequest(req, o.ModelName, o.NoSystemRole, o.TokenParamMode)
 		if err != nil {
 			yield(nil, err)
 			return
 		}
 
 		resp, err := o.Client.CreateChatCompletion(ctx, openaiReq)
+		if err != nil {
+			retryReq, ok := buildCompatRetryRequest(openaiReq, err)
+			if ok {
+				modelLog.Warn("模型 [%s] 首次请求参数不兼容，已自动调整后重试: %v", o.ModelName, err)
+				resp, err = o.Client.CreateChatCompletion(ctx, retryReq)
+			}
+		}
 		if err != nil {
 			yield(nil, err)
 			return
@@ -81,7 +91,7 @@ func (o *OpenAIModel) generate(ctx context.Context, req *model.LLMRequest) iter.
 // generateStream 流式生成
 func (o *OpenAIModel) generateStream(ctx context.Context, req *model.LLMRequest) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
-		openaiReq, err := toOpenAIChatCompletionRequest(req, o.ModelName, o.NoSystemRole)
+		openaiReq, err := toOpenAIChatCompletionRequest(req, o.ModelName, o.NoSystemRole, o.TokenParamMode)
 		if err != nil {
 			yield(nil, err)
 			return
@@ -90,6 +100,14 @@ func (o *OpenAIModel) generateStream(ctx context.Context, req *model.LLMRequest)
 
 		stream, err := o.Client.CreateChatCompletionStream(ctx, openaiReq)
 		if err != nil {
+			retryReq, ok := buildCompatRetryRequest(openaiReq, err)
+			if ok {
+				retryReq.Stream = true
+				modelLog.Warn("模型 [%s] 首次流式请求参数不兼容，已自动调整后重试: %v", o.ModelName, err)
+				stream, err = o.Client.CreateChatCompletionStream(ctx, retryReq)
+			}
+		}
+		if err != nil {
 			yield(nil, err)
 			return
 		}
@@ -97,6 +115,58 @@ func (o *OpenAIModel) generateStream(ctx context.Context, req *model.LLMRequest)
 
 		o.processStream(stream, yield)
 	}
+}
+
+func buildCompatRetryRequest(req openai.ChatCompletionRequest, err error) (openai.ChatCompletionRequest, bool) {
+	if !isCompatRetryableError(err) {
+		return req, false
+	}
+
+	changed := false
+	if req.MaxTokens > 0 && req.MaxCompletionTokens == 0 {
+		req.MaxCompletionTokens = req.MaxTokens
+		req.MaxTokens = 0
+		changed = true
+	}
+	if req.Temperature != 0 && req.Temperature != 1 {
+		req.Temperature = 1
+		changed = true
+	}
+	if req.TopP != 0 && req.TopP != 1 {
+		req.TopP = 1
+		changed = true
+	}
+	if req.N != 0 && req.N != 1 {
+		req.N = 1
+		changed = true
+	}
+	if req.PresencePenalty != 0 {
+		req.PresencePenalty = 0
+		changed = true
+	}
+	if req.FrequencyPenalty != 0 {
+		req.FrequencyPenalty = 0
+		changed = true
+	}
+
+	return req, changed
+}
+
+func isCompatRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, openai.ErrReasoningModelMaxTokensDeprecated) ||
+		errors.Is(err, openai.ErrReasoningModelLimitationsOther) ||
+		errors.Is(err, openai.ErrO1MaxTokensDeprecated) ||
+		errors.Is(err, openai.ErrO1BetaLimitationsOther) {
+		return true
+	}
+
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "please use maxcompletiontokens") ||
+		strings.Contains(msg, "please use max_completion_tokens") ||
+		strings.Contains(msg, "temperature, top_p and n are fixed at 1")
 }
 
 // processStream 处理流式响应
