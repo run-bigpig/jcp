@@ -109,9 +109,10 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, updateMode, peri
   // 浮动配置面板状态
   const [indicatorPopup, setIndicatorPopup] = React.useState<{
     type: MainIndicatorType;
-    x: number;
-    y: number;
+    xRatio: number;
+    yRatio: number;
   } | null>(null);
+  const [chartViewport, setChartViewport] = useState({ width: 0, height: 0 });
 
   const [subChartType, setSubChartType] = React.useState<SubChartType>('volume');
   const subChartTypeRef = useRef<SubChartType>('volume');
@@ -235,6 +236,7 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, updateMode, peri
         const w = chartContainerRef.current.clientWidth;
         const h = chartContainerRef.current.clientHeight;
         const vh = volumeContainerRef.current.clientHeight;
+        setChartViewport(prev => (prev.width === w && prev.height === h ? prev : { width: w, height: h }));
         if (w > 0 && h > 0) chart.applyOptions({ width: w, height: h });
         if (w > 0 && vh > 0) volumeChart.applyOptions({ width: w, height: vh });
       }
@@ -604,7 +606,13 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, updateMode, peri
       }
 
       if (bestType && bestDist <= HIT_THRESHOLD) {
-        setIndicatorPopup({ type: bestType, x: param.point.x, y: param.point.y });
+        const width = chartContainerRef.current?.clientWidth || 1;
+        const height = chartContainerRef.current?.clientHeight || 1;
+        setIndicatorPopup({
+          type: bestType,
+          xRatio: param.point.x / width,
+          yRatio: param.point.y / height,
+        });
       } else {
         setIndicatorPopup(null);
       }
@@ -644,6 +652,18 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, updateMode, peri
 
   // ========== 渲染（图表容器始终保留在 DOM 中，避免销毁重建） ==========
   const hasData = safeData.length > 0;
+  const indicatorPopupLeft = indicatorPopup
+    ? Math.min(
+      Math.max(indicatorPopup.xRatio * chartViewport.width, 0),
+      Math.max(chartViewport.width - 200, 0),
+    )
+    : 0;
+  const indicatorPopupTop = indicatorPopup
+    ? Math.min(
+      Math.max(indicatorPopup.yRatio * chartViewport.height, 0),
+      Math.max(chartViewport.height - 120, 0),
+    )
+    : 0;
 
   return (
     <div className="h-full w-full fin-panel flex flex-col relative" onMouseDown={() => setIndicatorPopup(null)}>
@@ -805,8 +825,8 @@ export const StockChartLW: React.FC<StockChartProps> = ({ data, updateMode, peri
                 : 'bg-white border-slate-300 text-slate-700'
             }`}
             style={{
-              left: Math.min(indicatorPopup.x, (chartContainerRef.current?.clientWidth || 300) - 200),
-              top: Math.min(indicatorPopup.y, (chartContainerRef.current?.clientHeight || 200) - 120),
+              left: indicatorPopupLeft,
+              top: indicatorPopupTop,
             }}
             onClick={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}

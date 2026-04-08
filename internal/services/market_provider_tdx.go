@@ -202,12 +202,33 @@ func (p *tdxMarketProvider) FetchMarketIndices() ([]models.MarketIndex, error) {
 			return nil, errors.New("tdx returned empty index data")
 		}
 
+		dayResp, err := cli.GetIndexDay(code, 0, 2)
+		if err != nil {
+			return nil, err
+		}
+		if dayResp == nil || len(dayResp.List) == 0 {
+			return nil, errors.New("tdx returned empty index day data")
+		}
+
 		sort.Slice(resp.List, func(i, j int) bool {
 			return resp.List[i].Time.Before(resp.List[j].Time)
 		})
+		sort.Slice(dayResp.List, func(i, j int) bool {
+			return dayResp.List[i].Time.Before(dayResp.List[j].Time)
+		})
 
 		latest := resp.List[len(resp.List)-1]
-		preClose := latest.Last.Float64()
+		daily := dayResp.List[len(dayResp.List)-1]
+		preClose := daily.Last.Float64()
+		if preClose == 0 && len(dayResp.List) > 1 {
+			preClose = dayResp.List[len(dayResp.List)-2].Close.Float64()
+		}
+		if preClose == 0 {
+			preClose = latest.Last.Float64()
+		}
+		if preClose == 0 && len(resp.List) > 1 {
+			preClose = resp.List[0].Last.Float64()
+		}
 		if preClose == 0 && len(resp.List) > 1 {
 			preClose = resp.List[len(resp.List)-2].Close.Float64()
 		}
@@ -276,6 +297,7 @@ type tdxClient interface {
 	GetQuote(codes ...string) (protocol.QuotesResp, error)
 	GetKlineMinuteAll(code string) (*protocol.KlineResp, error)
 	GetKlineDayAll(code string) (*protocol.KlineResp, error)
+	GetIndexDay(code string, start, count uint16) (*protocol.KlineResp, error)
 	GetKlineWeekAll(code string) (*protocol.KlineResp, error)
 	GetKlineMonthAll(code string) (*protocol.KlineResp, error)
 	GetCodeAll(exchange protocol.Exchange) (*protocol.CodeResp, error)

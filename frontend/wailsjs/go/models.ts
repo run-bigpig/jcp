@@ -83,7 +83,6 @@ export namespace hottrend {
 	}
 
 }
-
 export namespace main {
 	
 	export class EnhancePromptRequest {
