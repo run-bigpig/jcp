@@ -48,6 +48,7 @@ var (
 	ErrModeratorTimeout = errors.New("小韭菜响应超时")
 	ErrNoAIConfig       = errors.New("未配置 AI 服务")
 	ErrNoAgents         = errors.New("没有可用的专家")
+	ErrEmptyAgentReply  = errors.New("模型返回空内容")
 )
 
 // isRetryableError 判断错误是否可重试
@@ -260,6 +261,18 @@ func emitProgress(cb ProgressCallback, event ProgressEvent) {
 	if cb != nil {
 		cb(event)
 	}
+}
+
+func finalizeAgentContent(partialText string, finalText string, sawPartial bool) (string, error) {
+	partialText = openai.FilterVendorToolCallMarkers(partialText)
+	finalText = openai.FilterVendorToolCallMarkers(finalText)
+	if sawPartial && strings.TrimSpace(partialText) != "" {
+		return partialText, nil
+	}
+	if strings.TrimSpace(finalText) == "" {
+		return "", ErrEmptyAgentReply
+	}
+	return finalText, nil
 }
 
 // SendMessage 发送会议消息，生成多专家回复（并行执行）
@@ -912,7 +925,9 @@ func (s *Service) runSingleAgent(
 		runCfg.StreamingMode = agent.StreamingModeSSE
 	}
 
-	var sb strings.Builder
+	var partialText strings.Builder
+	var finalText strings.Builder
+	sawPartial := false
 	for event, err := range r.Run(ctx, "user", sessionID, userMsg, runCfg) {
 		if err != nil {
 			return "", err
@@ -946,21 +961,30 @@ func (s *Service) runSingleAgent(
 				// streaming 模式下只累积 Partial 片段，避免重复
 				if progressCallback != nil {
 					if event.LLMResponse.Partial {
-						sb.WriteString(part.Text)
+						sawPartial = true
+						partialText.WriteString(part.Text)
 						progressCallback(ProgressEvent{
 							Type: "streaming", AgentID: cfg.ID, AgentName: cfg.Name,
 							Content: part.Text,
 						})
+					} else if !sawPartial {
+						finalText.WriteString(part.Text)
 					}
 				} else {
-					sb.WriteString(part.Text)
+					finalText.WriteString(part.Text)
 				}
 			}
 		}
 	}
 
-	content := openai.FilterVendorToolCallMarkers(sb.String())
-	if s.verboseAgentIO && strings.TrimSpace(content) != "" {
+	content, err := finalizeAgentContent(partialText.String(), finalText.String(), sawPartial)
+	if err != nil {
+		if s.verboseAgentIO {
+			log.Warn("agent %s empty output treated as retryable failure", cfg.ID)
+		}
+		return "", err
+	}
+	if s.verboseAgentIO {
 		log.Info("agent %s output: %s", cfg.ID, truncateString(content, 160))
 	}
 	return content, nil

@@ -2,11 +2,12 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"iter"
-	"slices"
+	"strings"
 
 	"github.com/sashabaranov/go-openai"
 	"google.golang.org/adk/model"
@@ -124,7 +125,7 @@ func (o *OpenAIModel) processStream(stream *openai.ChatCompletionStream, yield f
 	}
 	var finishReason genai.FinishReason
 	var usageMetadata *genai.GenerateContentResponseUsageMetadata
-	toolCallsMap := make(map[int]*toolCallBuilder)
+	toolCalls := newChatStreamToolCallAggregator()
 	var textContent string
 	var thoughtContent string
 	thinkParser := newThinkTagStreamParser()
@@ -186,24 +187,8 @@ func (o *OpenAIModel) processStream(stream *openai.ChatCompletionStream, yield f
 		}
 
 		// 处理标准工具调用
-		for _, toolCall := range choice.Delta.ToolCalls {
-			idx := 0
-			if toolCall.Index != nil {
-				idx = *toolCall.Index
-			}
-
-			if _, exists := toolCallsMap[idx]; !exists {
-				toolCallsMap[idx] = &toolCallBuilder{}
-			}
-
-			builder := toolCallsMap[idx]
-			if toolCall.ID != "" {
-				builder.id = toolCall.ID
-			}
-			if toolCall.Function.Name != "" {
-				builder.name = toolCall.Function.Name
-			}
-			builder.args += toolCall.Function.Arguments
+		for pos, toolCall := range choice.Delta.ToolCalls {
+			toolCalls.AddDelta(pos, toolCall)
 		}
 
 		if choice.FinishReason != "" {
@@ -248,19 +233,18 @@ func (o *OpenAIModel) processStream(stream *openai.ChatCompletionStream, yield f
 	}
 
 	// 聚合标准工具调用
-	if len(toolCallsMap) > 0 {
-		indices := sortedKeys(toolCallsMap)
-		for _, idx := range indices {
-			builder := toolCallsMap[idx]
-			part := &genai.Part{
-				FunctionCall: &genai.FunctionCall{
-					ID:   builder.id,
-					Name: builder.name,
-					Args: parseJSONArgs(builder.args),
-				},
-			}
-			aggregatedContent.Parts = append(aggregatedContent.Parts, part)
+	for _, builder := range toolCalls.OrderedBuilders() {
+		if builder == nil {
+			continue
 		}
+		part := &genai.Part{
+			FunctionCall: &genai.FunctionCall{
+				ID:   builder.id,
+				Name: builder.name,
+				Args: parseJSONArgs(builder.args),
+			},
+		}
+		aggregatedContent.Parts = append(aggregatedContent.Parts, part)
 	}
 
 	if streamErr != nil {
@@ -285,12 +269,133 @@ type toolCallBuilder struct {
 	args string
 }
 
-// sortedKeys 返回排序后的 map keys
-func sortedKeys(m map[int]*toolCallBuilder) []int {
-	keys := make([]int, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+// chatStreamToolCallAggregator 聚合兼容 OpenAI 的流式工具调用。
+// 一些兼容接口不会稳定返回 index，这里优先按 index / id 归并，
+// 都缺失时再按当前位置兜底，并在检测到新 JSON 对象时自动切分。
+type chatStreamToolCallAggregator struct {
+	builders      map[string]*toolCallBuilder
+	order         []string
+	indexKeys     map[int]string
+	idKeys        map[string]string
+	fallbackKeys  map[int]string
+	nextSynthetic int
+}
+
+func newChatStreamToolCallAggregator() *chatStreamToolCallAggregator {
+	return &chatStreamToolCallAggregator{
+		builders:     make(map[string]*toolCallBuilder),
+		indexKeys:    make(map[int]string),
+		idKeys:       make(map[string]string),
+		fallbackKeys: make(map[int]string),
 	}
-	slices.Sort(keys)
-	return keys
+}
+
+func (a *chatStreamToolCallAggregator) AddDelta(pos int, toolCall openai.ToolCall) {
+	key := a.lookupKey(pos, toolCall)
+	if builder := a.builders[key]; shouldRotateToolCallBuilder(builder, toolCall) {
+		key = a.newSyntheticKey()
+	}
+
+	a.bindAliases(pos, toolCall, key)
+	builder := a.ensureBuilder(key)
+	if toolCall.ID != "" {
+		builder.id = toolCall.ID
+	}
+	if toolCall.Function.Name != "" {
+		builder.name = toolCall.Function.Name
+	}
+	if toolCall.Function.Arguments != "" {
+		builder.args += toolCall.Function.Arguments
+	}
+}
+
+func (a *chatStreamToolCallAggregator) OrderedBuilders() []*toolCallBuilder {
+	builders := make([]*toolCallBuilder, 0, len(a.order))
+	for _, key := range a.order {
+		builders = append(builders, a.builders[key])
+	}
+	return builders
+}
+
+func (a *chatStreamToolCallAggregator) lookupKey(pos int, toolCall openai.ToolCall) string {
+	if toolCall.Index != nil {
+		if key, ok := a.indexKeys[*toolCall.Index]; ok {
+			return key
+		}
+	}
+	if toolCall.ID != "" {
+		if key, ok := a.idKeys[toolCall.ID]; ok {
+			return key
+		}
+	}
+	if key, ok := a.fallbackKeys[pos]; ok {
+		return key
+	}
+	if toolCall.Index != nil {
+		return fmt.Sprintf("idx:%d", *toolCall.Index)
+	}
+	if toolCall.ID != "" {
+		return fmt.Sprintf("id:%s", toolCall.ID)
+	}
+	return a.newSyntheticKey()
+}
+
+func (a *chatStreamToolCallAggregator) bindAliases(pos int, toolCall openai.ToolCall, key string) {
+	if toolCall.Index != nil {
+		a.indexKeys[*toolCall.Index] = key
+	}
+	if toolCall.ID != "" {
+		a.idKeys[toolCall.ID] = key
+	}
+	if toolCall.Index == nil {
+		a.fallbackKeys[pos] = key
+	}
+}
+
+func (a *chatStreamToolCallAggregator) ensureBuilder(key string) *toolCallBuilder {
+	if builder, ok := a.builders[key]; ok {
+		return builder
+	}
+	builder := &toolCallBuilder{}
+	a.builders[key] = builder
+	a.order = append(a.order, key)
+	return builder
+}
+
+func (a *chatStreamToolCallAggregator) newSyntheticKey() string {
+	key := fmt.Sprintf("anon:%d", a.nextSynthetic)
+	a.nextSynthetic++
+	return key
+}
+
+func shouldRotateToolCallBuilder(builder *toolCallBuilder, toolCall openai.ToolCall) bool {
+	if builder == nil {
+		return false
+	}
+	if toolCall.ID != "" && builder.id != "" && toolCall.ID != builder.id {
+		return true
+	}
+	if toolCall.Function.Name != "" && builder.name != "" && toolCall.Function.Name != builder.name {
+		return true
+	}
+
+	if !isCompleteJSONObject(builder.args) {
+		return false
+	}
+
+	if toolCall.Function.Arguments != "" {
+		return true
+	}
+	if toolCall.ID != "" && builder.id == "" {
+		return true
+	}
+	return false
+}
+
+func isCompleteJSONObject(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return false
+	}
+	return json.Valid([]byte(trimmed))
 }

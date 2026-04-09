@@ -474,6 +474,17 @@ func convertChatCompletionResponse(resp *openai.ChatCompletionResponse) (*model.
 		}
 	}
 
+	// 兼容旧版 function_call 字段
+	if choice.Message.FunctionCall != nil && choice.Message.FunctionCall.Name != "" {
+		content.Parts = append(content.Parts, &genai.Part{
+			FunctionCall: &genai.FunctionCall{
+				ID:   "legacy_function_call",
+				Name: choice.Message.FunctionCall.Name,
+				Args: parseJSONArgs(choice.Message.FunctionCall.Arguments),
+			},
+		})
+	}
+
 	// 处理 usage
 	var usageMetadata *genai.GenerateContentResponseUsageMetadata
 	if resp.Usage.TotalTokens > 0 {

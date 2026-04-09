@@ -70,7 +70,10 @@ func toResponsesRequest(req *model.LLMRequest, modelName string, noSystemRole bo
 
 	// 转换工具定义
 	if len(req.Config.Tools) > 0 {
-		apiReq.Tools = convertResponsesTools(req.Config.Tools)
+		apiReq.Tools, err = convertResponsesTools(req.Config.Tools)
+		if err != nil {
+			return CreateResponseRequest{}, err
+		}
 	}
 
 	// 应用生成参数
@@ -144,7 +147,6 @@ func toResponsesInputItem(content *genai.Content) ([]ResponsesInputItem, error) 
 			}
 			toolCallItems = append(toolCallItems, ResponsesInputItem{
 				Type:      "function_call",
-				ID:        part.FunctionCall.ID,
 				CallID:    part.FunctionCall.ID,
 				Name:      part.FunctionCall.Name,
 				Arguments: string(argsJSON),
@@ -182,7 +184,7 @@ func convertRoleForResponses(role string) string {
 }
 
 // convertResponsesTools 转换工具定义为 Responses API 扁平化格式
-func convertResponsesTools(genaiTools []*genai.Tool) []ResponsesTool {
+func convertResponsesTools(genaiTools []*genai.Tool) ([]ResponsesTool, error) {
 	var tools []ResponsesTool
 	for _, genaiTool := range genaiTools {
 		if genaiTool == nil {
@@ -193,6 +195,10 @@ func convertResponsesTools(genaiTools []*genai.Tool) []ResponsesTool {
 			if params == nil {
 				params = funcDecl.Parameters
 			}
+			params, err := normalizeResponsesToolSchema(params)
+			if err != nil {
+				return nil, fmt.Errorf("normalize responses tool schema %s: %w", funcDecl.Name, err)
+			}
 			tools = append(tools, ResponsesTool{
 				Type:        "function",
 				Name:        funcDecl.Name,
@@ -201,7 +207,95 @@ func convertResponsesTools(genaiTools []*genai.Tool) []ResponsesTool {
 			})
 		}
 	}
-	return tools
+	return tools, nil
+}
+
+func normalizeResponsesToolSchema(schema any) (any, error) {
+	if schema == nil {
+		return defaultResponsesToolSchema(), nil
+	}
+
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return nil, fmt.Errorf("marshal schema: %w", err)
+	}
+	if string(raw) == "null" {
+		return defaultResponsesToolSchema(), nil
+	}
+
+	var normalized any
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return nil, fmt.Errorf("unmarshal schema: %w", err)
+	}
+	if normalized == nil {
+		return defaultResponsesToolSchema(), nil
+	}
+
+	normalizeResponsesSchemaNode(normalized)
+	if root, ok := normalized.(map[string]any); ok {
+		ensureResponsesObjectSchema(root)
+	}
+
+	return normalized, nil
+}
+
+func defaultResponsesToolSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{},
+		"additionalProperties": false,
+	}
+}
+
+func normalizeResponsesSchemaNode(node any) {
+	switch typed := node.(type) {
+	case map[string]any:
+		ensureResponsesObjectSchema(typed)
+		for key, value := range typed {
+			if key == "additionalProperties" {
+				if schemaMap, ok := value.(map[string]any); ok && isAlwaysFalseSchema(schemaMap) {
+					typed[key] = false
+					continue
+				}
+			}
+			normalizeResponsesSchemaNode(value)
+		}
+	case []any:
+		for _, item := range typed {
+			normalizeResponsesSchemaNode(item)
+		}
+	}
+}
+
+func ensureResponsesObjectSchema(schema map[string]any) {
+	if !isObjectSchemaType(schema["type"]) {
+		return
+	}
+	if props, ok := schema["properties"]; !ok || props == nil {
+		schema["properties"] = map[string]any{}
+	}
+}
+
+func isObjectSchemaType(schemaType any) bool {
+	switch typed := schemaType.(type) {
+	case string:
+		return typed == "object"
+	case []any:
+		for _, item := range typed {
+			if item == "object" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isAlwaysFalseSchema(schema map[string]any) bool {
+	if len(schema) != 1 {
+		return false
+	}
+	notSchema, ok := schema["not"].(map[string]any)
+	return ok && len(notSchema) == 0
 }
 
 // convertResponsesResponse 将 Responses API 响应转换为 ADK LLMResponse
