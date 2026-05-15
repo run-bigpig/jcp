@@ -2,13 +2,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Stock, KLineData } from '../types';
 import { getAgentConfigs, AgentConfig } from '../services/strategyService';
 import { StockSession, ChatMessage, sendMeetingMessage, MeetingMessageRequest, getSessionMessages, retryAgent, retryAgentAndContinue, cancelInterruptedMeeting } from '../services/sessionService';
-import { MessageSquare, Loader2, Send, User, Users, X, Reply, Trash2, Wrench, CheckCircle2, AlertCircle, Copy, Check, RotateCcw, Pencil, Square } from 'lucide-react';
+import { MessageSquare, Loader2, Send, User, Users, X, Reply, Trash2, Wrench, CheckCircle2, AlertCircle, Copy, Check, RotateCcw, Pencil, Square, FileText, Printer } from 'lucide-react';
 import { clearSessionMessages } from '../services/sessionService';
 import { NodeRenderer } from 'markstream-react';
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime';
 import { useMentionPicker } from '../hooks/useMentionPicker';
 import { useTheme } from '../contexts/ThemeContext';
 import { CancelMeeting } from '../../wailsjs/go/main/App';
+import { buildChatExportFilename, createChatExportMarkdown, downloadMarkdown, openChatExportPrintWindow } from '../utils/chatExport';
 import 'markstream-react/index.css';
 
 // 进度事件类型
@@ -78,6 +79,8 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [failedUserMsgId, setFailedUserMsgId] = useState<string | null>(null);
   const [retryingAgentId, setRetryingAgentId] = useState<string | null>(null);
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(() => new Set());
 
   // 进度状态
   const [progress, setProgress] = useState<ProgressState>({
@@ -165,6 +168,8 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
       setMessages([]);
     }
     setUserQuery('');
+    setIsSelectionMode(false);
+    setSelectedMessageIds(new Set());
 
     // 更新 refs（在 effect 结束时更新，确保下次能正确检测切换）
     prevStockCodeRef.current = newStockCode;
@@ -248,6 +253,14 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
+  }, [messages]);
+
+  useEffect(() => {
+    setSelectedMessageIds(prev => {
+      const availableIds = new Set(messages.map(msg => msg.id));
+      const next = new Set([...prev].filter(id => availableIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
   }, [messages]);
 
   const handleSendMessage = async (
@@ -384,6 +397,49 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
     }
   };
 
+  const selectedMessages = messages.filter(msg => selectedMessageIds.has(msg.id));
+
+  const toggleSelectionMode = () => {
+    setIsSelectionMode(prev => {
+      if (prev) {
+        setSelectedMessageIds(new Set());
+      }
+      return !prev;
+    });
+  };
+
+  const toggleMessageSelection = (msgId: string) => {
+    setSelectedMessageIds(prev => {
+      const next = new Set(prev);
+      if (next.has(msgId)) {
+        next.delete(msgId);
+      } else {
+        next.add(msgId);
+      }
+      return next;
+    });
+  };
+
+  const exportOptions = {
+    stockCode: session?.stockCode,
+    stockName: session?.stockName,
+  };
+
+  const handleExportMarkdown = () => {
+    if (selectedMessages.length === 0) return;
+    const markdown = createChatExportMarkdown(selectedMessages, exportOptions);
+    const filename = buildChatExportFilename(exportOptions, 'md');
+    downloadMarkdown(markdown, filename);
+  };
+
+  const handleExportPdf = () => {
+    if (selectedMessages.length === 0) return;
+    const opened = openChatExportPrintWindow(selectedMessages, exportOptions);
+    if (!opened) {
+      addSystemMessage('PDF 导出窗口被拦截，请允许弹窗后重试');
+    }
+  };
+
   // 重试发送消息
   const handleRetry = (msg: ChatMessage) => {
     setFailedUserMsgId(null);
@@ -452,6 +508,8 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
     const result = await clearSessionMessages(session.stockCode);
     if (result === 'success') {
       setMessages([]);
+      setIsSelectionMode(false);
+      setSelectedMessageIds(new Set());
       onSessionUpdate({
         ...session,
         messages: []
@@ -460,28 +518,63 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
   };
 
   return (
-    <div className="relative flex flex-col h-full">
+    <div className="relative flex flex-col h-full min-h-0 overflow-hidden">
       {/* Header */}
-      <div className="p-4 border-b fin-divider-soft">
+      <div className="p-4 border-b fin-divider-soft shrink-0 fin-panel-strong relative z-20">
         <div className="flex items-center justify-between">
           <h2 className={`text-lg font-bold flex items-center gap-2 ${colors.isDark ? 'text-white' : 'text-slate-800'}`}>
             <Users style={{ color: 'var(--accent)' }} />
             韭菜讨论中心
           </h2>
-          <button
-            onClick={handleClearMessages}
-            disabled={isSimulating || messages.length === 0}
-            className={`p-1.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${colors.isDark ? 'text-slate-400 hover:text-red-400 hover:bg-slate-800' : 'text-slate-500 hover:text-red-500 hover:bg-slate-200'}`}
-            title="清空聊天记录"
-          >
-            <Trash2 size={16} />
-          </button>
+          <div className="flex items-center gap-1.5">
+            {isSelectionMode && (
+              <>
+                <span className={`text-xs px-2 py-1 rounded border fin-divider fin-chip ${colors.isDark ? 'text-slate-300' : 'text-slate-600'}`}>
+                  已选 {selectedMessages.length}
+                </span>
+                <button
+                  onClick={handleExportMarkdown}
+                  disabled={selectedMessages.length === 0}
+                  className={`p-1.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${colors.isDark ? 'text-slate-400 hover:text-accent-2 hover:bg-slate-800' : 'text-slate-500 hover:text-accent hover:bg-slate-200'}`}
+                  title="导出 Markdown"
+                >
+                  <FileText size={16} />
+                </button>
+                <button
+                  onClick={handleExportPdf}
+                  disabled={selectedMessages.length === 0}
+                  className={`p-1.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${colors.isDark ? 'text-slate-400 hover:text-accent-2 hover:bg-slate-800' : 'text-slate-500 hover:text-accent hover:bg-slate-200'}`}
+                  title="导出 PDF"
+                >
+                  <Printer size={16} />
+                </button>
+              </>
+            )}
+            <button
+              onClick={toggleSelectionMode}
+              disabled={messages.length === 0}
+              className={`px-2 py-1 text-xs rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${isSelectionMode ? 'bg-accent/20 text-accent-2' : (colors.isDark ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-800' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200')}`}
+              title={isSelectionMode ? '取消选择' : '选择消息'}
+            >
+              {isSelectionMode ? '取消' : '选择'}
+            </button>
+            <button
+              onClick={handleClearMessages}
+              disabled={isSimulating || messages.length === 0}
+              className={`p-1.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${colors.isDark ? 'text-slate-400 hover:text-red-400 hover:bg-slate-800' : 'text-slate-500 hover:text-red-500 hover:bg-slate-200'}`}
+              title="清空聊天记录"
+            >
+              <Trash2 size={16} />
+            </button>
+          </div>
         </div>
-        <p className={`text-xs mt-1 ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>@韭菜提问，引用观点深入讨论</p>
+        <p className={`text-xs mt-1 ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+          {isSelectionMode ? '勾选要导出的消息，可导出 Markdown 或通过打印保存 PDF' : '@韭菜提问，引用观点深入讨论'}
+        </p>
       </div>
 
       {/* Chat Area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 fin-scrollbar" ref={scrollRef}>
+      <div className="flex-1 min-h-0 overflow-y-auto p-4 pb-6 space-y-4 fin-scrollbar" ref={scrollRef}>
         {messages.length === 0 && (
           <div className={`h-full flex flex-col items-center justify-center text-sm p-8 text-center opacity-60 ${colors.isDark ? 'text-slate-500' : 'text-slate-400'}`}>
             <MessageSquare size={32} className="mb-2" />
@@ -494,10 +587,28 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
           const isSystem = msg.agentId === 'system';
           const isUser = msg.agentId === 'user';
           const agent = allAgents.find(a => a.id === msg.agentId);
+          const isSelected = selectedMessageIds.has(msg.id);
+          const selectionControl = isSelectionMode ? (
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => toggleMessageSelection(msg.id)}
+              className={`absolute left-0 top-1 w-5 h-5 rounded border flex items-center justify-center shrink-0 cursor-pointer transition-colors z-10 ${
+                isSelected
+                  ? 'bg-accent text-white border-accent'
+                  : (colors.isDark ? 'border-slate-600 hover:border-accent text-transparent' : 'border-slate-300 hover:border-accent text-transparent')
+              }`}
+              aria-pressed={isSelected}
+              title={isSelected ? '取消选择' : '选择消息'}
+            >
+              <Check size={13} />
+            </button>
+          ) : null;
           
           if (isSystem) {
             return (
-               <div key={msg.id} className="flex justify-center my-2">
+               <div key={msg.id} className={`relative flex items-start justify-center gap-2 my-2 ${isSelectionMode ? 'pl-7' : ''}`}>
+                 {selectionControl}
                  <span className={`text-xs fin-chip px-3 py-1 rounded-full border fin-divider ${colors.isDark ? 'text-slate-400' : 'text-slate-500'}`}>
                    {msg.content}
                  </span>
@@ -515,7 +626,8 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
             const displayName = msg.agentName || '老韭菜';
 
             return (
-               <div key={msg.id} className="flex gap-3 justify-end animate-in fade-in slide-in-from-bottom-2 duration-300">
+               <div key={msg.id} className={`relative flex gap-3 justify-end animate-in fade-in slide-in-from-bottom-2 duration-300 ${isSelectionMode ? 'pl-7' : ''}`}>
+                 {selectionControl}
                  <div className="flex-1 text-right max-w-[85%]">
                     <div className="flex items-baseline gap-2 mb-1 justify-end">
                       <span className="text-xs font-bold text-accent-2">{displayName}</span>
@@ -568,7 +680,8 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
             const isOpening = msg.msgType === 'opening';
             const isSummary = msg.msgType === 'summary';
             return (
-              <div key={msg.id} className="flex gap-3 animate-in fade-in slide-in-from-bottom-2 duration-300 group">
+              <div key={msg.id} className={`relative flex gap-3 animate-in fade-in slide-in-from-bottom-2 duration-300 group ${isSelectionMode ? 'pl-7' : ''}`}>
+                {selectionControl}
                 <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 bg-gradient-to-br from-amber-500 to-orange-500 text-white shadow-md ring-2 ring-slate-900">
                   <Users size={14} />
                 </div>
@@ -602,7 +715,8 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
           }
 
           return (
-            <div key={msg.id} className={`flex gap-3 animate-in fade-in slide-in-from-bottom-2 duration-300 group`}>
+            <div key={msg.id} className={`relative flex gap-3 animate-in fade-in slide-in-from-bottom-2 duration-300 group ${isSelectionMode ? 'pl-7' : ''}`}>
+              {selectionControl}
               <div
                 className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 text-white shadow-md ring-2 ring-slate-900"
                 style={{ backgroundColor: msg.error ? '#ef4444' : (agent?.color || '#475569') }}
@@ -715,7 +829,7 @@ export const AgentRoom: React.FC<AgentRoomProps> = ({ session, onSessionUpdate }
           </div>
         )}
       </div>
-      <div className="p-3 border-t fin-divider-soft shrink-0">
+      <div className="p-3 border-t fin-divider-soft shrink-0 fin-panel-strong relative z-10">
         {/* 引用预览 */}
         {replyToMessage && (
           <div className={`flex items-center gap-2 mb-2 p-2 rounded-lg border-l-2 border-accent ${colors.isDark ? 'bg-slate-800/50' : 'bg-slate-100'}`}>
